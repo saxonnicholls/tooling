@@ -14,7 +14,7 @@
 #      # check_mirror.py, check_version.py, check_interfaces.py and single_include.py --check as CTests (label boundary)
 #      snicholls_tooling_add_checks()
 #
-#      # every single_include/<name>.hpp compiles on its own, with nothing but the standard library
+#      # the single include, generated in the build tree, compiles on its own with nothing but the standard library
 #      snicholls_single_include_check(my_lib_single_include COMPILE_OPTIONS -Werror)
 #
 #  snicholls_header_check(<target>
@@ -31,9 +31,9 @@
 #
 #  snicholls_single_include_check(<target> [COMPILE_OPTIONS <option>...] [CXX_STANDARD <n>] [CONFIG <tooling.conf>])
 #
-#  defines an OBJECT library <target> with one translation unit per single_include.<name> line, which includes
-#  <single_include_dir>/<name>.hpp with no other include directory. single_include.py --check proves the file fresh;
-#  this proves it self-contained.
+#  generates every single_include.<name> file into the build tree (regenerated when any header it is made from
+#  changes) and defines an OBJECT library <target> with one translation unit per file, which includes it with no
+#  other include directory: it proves the file self-contained. single_include.py --check proves it complete.
 #
 #  snicholls_tooling_add_checks([MIRROR] [VERSION] [INTERFACES] [SINGLE_INCLUDE] [LABELS <label>...]
 #                               [CONFIG <tooling.conf>])
@@ -186,19 +186,42 @@ function(snicholls_single_include_check target)
         message(FATAL_ERROR "snicholls_single_include_check: ${arg_CONFIG} has no single_include.<name> line")
     endif()
     snicholls_tooling_read_config("${arg_CONFIG}" _conf)
-    if(NOT DEFINED _conf_single_include_dir)
-        set(_conf_single_include_dir single_include)
+    if(NOT DEFINED _conf_include_dir)
+        set(_conf_include_dir include)
+    endif()
+    if(NOT DEFINED _conf_single_include_inline)
+        set(_conf_single_include_inline "${_conf_include_dir}")
     endif()
     get_filename_component(_repo "${arg_CONFIG}" DIRECTORY)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+    # every header the file is made from: a change to any of them regenerates it
+    separate_arguments(_inline UNIX_COMMAND "${_conf_single_include_inline}")
+    set(_depends "${arg_CONFIG}" "${SNICHOLLS_TOOLING_DIR}/scripts/single_include.py")
+    foreach(_dir IN LISTS _inline)
+        file(GLOB_RECURSE _headers CONFIGURE_DEPENDS "${_repo}/${_dir}/*.hpp" "${_repo}/${_dir}/*.h")
+        list(APPEND _depends ${_headers})
+    endforeach()
+
+    set(_out "${CMAKE_CURRENT_BINARY_DIR}/${target}/single_include")
+    set(_files)
     set(_sources)
     foreach(_line IN LISTS _lines)
         string(REGEX REPLACE "^[ \t]*single_include\\.([A-Za-z0-9_.+-]+).*$" "\\1" _name "${_line}")
+        list(APPEND _files "${_out}/${_name}.hpp")
         set(_cpp "${CMAKE_CURRENT_BINARY_DIR}/${target}/${_name}.cpp")
         file(CONFIGURE OUTPUT "${_cpp}" CONTENT "#include \"${_name}.hpp\"\n" @ONLY)
         list(APPEND _sources "${_cpp}")
     endforeach()
+    add_custom_command(OUTPUT ${_files}
+        COMMAND Python3::Interpreter "${SNICHOLLS_TOOLING_DIR}/scripts/single_include.py"
+                --root "${_repo}" --config "${arg_CONFIG}" --out "${_out}"
+        DEPENDS ${_depends}
+        COMMENT "Generating the single include (${_out})"
+        VERBATIM)
+    set_source_files_properties(${_sources} PROPERTIES OBJECT_DEPENDS "${_files}")
     add_library(${target} OBJECT ${_sources})
-    target_include_directories(${target} PRIVATE "${_repo}/${_conf_single_include_dir}")
+    target_include_directories(${target} PRIVATE "${_out}")
     if(arg_COMPILE_OPTIONS)
         target_compile_options(${target} PRIVATE ${arg_COMPILE_OPTIONS})
     endif()

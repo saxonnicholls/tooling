@@ -14,7 +14,7 @@
 #      make asan            AddressSanitizer and UBSan, warnings as errors
 #      make docs            the documentation (tooling.conf docs = yes), in build-docs
 #      make check           check_version.py, check_mirror.py, check_interfaces.py, single_include.py --check
-#      make single-include  rewrite single_include/ (make test does it first, so a local gate never runs stale)
+#      make single-include  write single_include/<name>.hpp (git-ignored; CI attaches it to every release)
 #      make ubuntu          the Ubuntu gate in Docker (scripts/test_ubuntu.sh; UBUNTU="--quick" for its arguments)
 #      make demos           build and run every demo with its output shown (CTest label demo), or make.demos
 #      make benchmarks      build the benchmarks in Release (benchmarks = yes) and run them: CTest label benchmark,
@@ -66,14 +66,14 @@ endef
 
 .PHONY: test test-werror asan docs check single-include ubuntu demos benchmarks clean
 
-test: single-include check
+test: check
 	$(call tooling_build,$(BUILD),$(CONFIG),)
 
-test-werror: single-include check
+test-werror: check
 	$(call tooling_build,build-werror,$(CONFIG),-D$(TOOLING_PREFIX)WERROR=ON)
 
 asan: export UBSAN_OPTIONS ?= halt_on_error=1:print_stacktrace=1
-asan: single-include check
+asan: check
 	$(call tooling_build,build-asan,RelWithDebInfo,-D$(TOOLING_PREFIX)WERROR=ON -D$(TOOLING_PREFIX)SANITIZE=address$(,)undefined)
 
 check:

@@ -381,25 +381,35 @@ class SingleIncludeTest(Fixture):
         self.assertIn(message, out)
         return out
 
-    def test_the_fixture_is_fresh_and_complete(self):
-        self.check(0, "1 file(s), fresh and complete")
+    def generated(self, *args):
+        out = os.path.join(self.tmp, "out")
+        code, log = self.run_si("--out", out, *args)
+        self.assertEqual(code, 0, log)
+        with open(os.path.join(out, "snicholls_fixture.hpp"), encoding="utf-8") as f:
+            return f.read()
 
-    def test_a_changed_header_makes_it_stale_until_rewritten(self):
-        self.edit(INC + "/widget.hpp", "namespace snicholls", "// a change\nnamespace snicholls")
-        self.check(1, "single_include/snicholls_fixture.hpp is stale: run `make single-include`")
-        self.assertEqual(self.run_si()[0], 0)
+    def test_the_fixture_is_complete(self):
+        self.check(0, "1 file(s), complete")
+
+    def test_nothing_is_committed_and_check_writes_nothing(self):
+        self.assertFalse(os.path.exists(self.path("single_include/snicholls_fixture.hpp")))
         self.check(0)
+        self.assertFalse(os.path.exists(self.path("single_include/snicholls_fixture.hpp")))
 
-    def test_a_missing_file_fails(self):
-        self.remove("single_include/snicholls_fixture.hpp")
-        self.check(1, "single_include/snicholls_fixture.hpp is missing")
+    def test_it_is_written_to_the_single_include_dir_by_default(self):
+        code, out = self.run_si()
+        self.assertEqual(code, 0, out)
+        self.assertTrue(os.path.exists(self.path("single_include/snicholls_fixture.hpp")))
 
     def test_every_header_is_expanded_once_and_standard_headers_are_kept(self):
-        with open(self.path("single_include/snicholls_fixture.hpp"), encoding="utf-8") as f:
-            text = f.read()
+        text = self.generated()
         self.assertNotIn("#include <snicholls/", text)
         self.assertIn("GENERATED from <snicholls/fixture/fixture.hpp>", text)
         self.assertEqual(text.count("#define snicholls_fixture_widget_hpp"), 1)
+
+    def test_it_follows_the_headers(self):
+        self.edit(INC + "/widget.hpp", "namespace snicholls", "// a change\nnamespace snicholls")
+        self.assertIn("// a change", self.generated())
 
     def test_a_header_outside_the_umbrella_fails_unless_opted_in(self):
         self.write(INC + "/loose.hpp", "#ifndef snicholls_fixture_loose_hpp\n#define snicholls_fixture_loose_hpp\n#endif\n")
@@ -410,10 +420,6 @@ class SingleIncludeTest(Fixture):
     def test_an_opted_in_header_that_is_included_fails(self):
         self.conf("single_include_opt_in = widget.hpp")
         self.check(1, "widget.hpp is opted out (single_include_opt_in) but a single include contains it")
-
-    def test_an_orphan_file_fails(self):
-        self.write("single_include/old.hpp", "// nobody writes me\n")
-        self.check(1, "single_include/old.hpp is written by no single_include.<name> line")
 
     def test_no_configured_file_is_a_configuration_error(self):
         self.edit("tooling.conf", "single_include.snicholls_fixture", "# single_include.snicholls_fixture")

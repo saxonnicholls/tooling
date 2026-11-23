@@ -147,7 +147,7 @@ jobs:
         run: python3 "$TOOLING/scripts/check_mirror.py"
       - name: Every interface has its concept, and the reverse
         run: python3 "$TOOLING/scripts/check_interfaces.py"
-      - name: The single include is fresh and complete
+      - name: The single include holds every public header
         run: python3 "$TOOLING/scripts/single_include.py" --check
 
   linux:
@@ -333,3 +333,51 @@ jobs:
           git -C "$site" -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -q -m "docs: $DEST ($GITHUB_SHA)"
           git -C "$site" push origin gh-pages
+
+  # The single include is never committed, so it cannot be stale: on a release tag it is generated from the tagged
+  # commit, compiled alone with warnings as errors, and attached to the GitHub release, once every gating leg is green
+  single-include:
+    name: Release the single include
+    needs: [plan, checks, linux, macos]
+    if: >-
+      always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') &&
+      !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: ${{ inputs.path }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Prepare
+        if: inputs.prepare != ''
+        working-directory: .
+        run: bash -c "$PREPARE"
+      - name: Generate it from the tagged commit
+        run: |
+          set -euo pipefail
+          python3 "$TOOLING/scripts/single_include.py" --check
+          python3 "$TOOLING/scripts/single_include.py" --out "$RUNNER_TEMP/single_include"
+          ls -l "$RUNNER_TEMP/single_include"
+      - name: Each file compiles alone, warnings as errors
+        run: |
+          set -euo pipefail
+          for h in "$RUNNER_TEMP"/single_include/*.hpp; do
+            printf '#include "%s"\n' "$(basename "$h")" > "$RUNNER_TEMP/use.cpp"
+            g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror -fsyntax-only -I"$RUNNER_TEMP/single_include" "$RUNNER_TEMP/use.cpp"
+            echo "$(basename "$h"): compiles alone"
+          done
+      - name: Attach it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          TITLE: ${{ needs.plan.outputs.name }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --verify-tag --title "$TITLE $TAG" --notes "See CHANGELOG.md for $TAG."
+          gh release upload "$TAG" "$RUNNER_TEMP"/single_include/*.hpp --clobber

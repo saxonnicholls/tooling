@@ -83,12 +83,17 @@ class WorkflowTest(unittest.TestCase):
 
     def test_the_library_workflow_runs_the_legs(self):
         jobs = blocks(self.library, "jobs", 2)
-        self.assertEqual(list(jobs), ["plan", "checks", "linux", "macos", "windows", "docs"])
+        self.assertEqual(list(jobs), ["plan", "checks", "linux", "macos", "windows", "docs", "single-include"])
         self.assertIn("test_ubuntu.sh\" --repo . --only \"$CONFIGURATION\"", jobs["linux"])
         self.assertIn("ubuntu-24.04-arm", jobs["plan"])
         self.assertIn("continue-on-error: ${{ inputs.msvc_continue_on_error }}", jobs["windows"])
         self.assertIn("-DCMAKE_CXX_FLAGS_DEBUG=-O0", jobs["macos"])
         self.assertIn("if: inputs.pages && github.event_name == 'push'", jobs["docs"])
+        # the single include: generated from the tagged commit, compiled alone, attached to the release
+        self.assertIn("startsWith(github.ref, 'refs/tags/v')", jobs["single-include"])
+        self.assertIn("needs: [plan, checks, linux, macos]", jobs["single-include"])
+        self.assertIn("gh release upload", jobs["single-include"])
+        self.assertIn("single_include.py\" --check", jobs["checks"])
 
     def test_tooling_calls_it_on_the_fixture(self):
         tools = blocks(self.files["tools.yml"], "jobs", 2)

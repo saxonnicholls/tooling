@@ -5,19 +5,22 @@
 #
 #  Copyright 2010-2026 Saxon Herschel Nicholls
 #
-#  Writes a repository's single-include headers, and proves the committed ones are fresh (STANDARDS section 2,
-#  "The single include"). Every library ships single_include/<name>.hpp: its umbrella header with every header of
-#  its own, and of the libraries it pins, expanded in place, each exactly once, so the library can be used by copying
-#  one file. Everything else (standard and system includes, guards, #if blocks) is copied verbatim: the file is the
-#  same code, not a rendering of it.
+#  Builds a repository's single-include headers (STANDARDS section 2, "The single include"). Every library offers
+#  <name>.hpp: its umbrella header with every header of its own, and of the libraries it pins, expanded in place, each
+#  exactly once, so the library can be used by copying one file. Everything else (standard and system includes,
+#  guards, #if blocks) is copied verbatim: the file is the same code, not a rendering of it.
+#
+#  The file is never committed: it is generated, so it cannot be stale. The build generates and compiles it
+#  (snicholls_single_include_check), and the library workflow attaches it to every tagged release.
 #
 #      python3 third_party/tooling/scripts/single_include.py [--root <repository>] [--config <tooling.conf>]
-#      python3 third_party/tooling/scripts/single_include.py --check     # exit 1 if any file is stale or incomplete
+#                                                            [--out <dir>]   # default <single_include_dir>
+#      python3 third_party/tooling/scripts/single_include.py --check          # exit 1 if any file is incomplete
 #
 #  Settings (tooling.conf):
-#    single_include.<name>   the umbrella header, as it is included (snicholls/core/core.hpp): writes
-#                            <single_include_dir>/<name>.hpp. One line per file; at least one.
-#    single_include_dir      default single_include
+#    single_include.<name>   the umbrella header, as it is included (snicholls/core/core.hpp): writes <name>.hpp.
+#                            One line per file; at least one.
+#    single_include_dir      default single_include (git-ignored; it holds only a README)
 #    single_include_inline   the include directories whose headers are expanded, relative to the repository (default:
 #                            include_dir). A pinned library's include directory belongs here, so the file needs nothing
 #                            else: third_party/core/include.
@@ -25,13 +28,10 @@
 #                            to include_root; say why beside it
 #    include_dir, include_root   as for the other checks
 #
-#  --check fails on:
-#    - a file that differs from what this writes (stale: run `make single-include` and commit);
-#    - a header under include_root that no single include contains and that is not opted in (incomplete: add it to
-#      the umbrella), or an opted-in header that one contains anyway;
-#    - a file in single_include_dir that no single_include.<name> line writes (an orphan rots in place).
+#  --check writes nothing and fails on a header under include_root that no single include contains and that is not
+#  opted in (add it to the umbrella), or on an opted-in header that one contains anyway.
 #
-#  Exit status 0 when fresh and complete, 1 when not, 2 on a configuration error.
+#  Exit status 0 when complete, 1 when not, 2 on a configuration error.
 #
 
 import argparse
@@ -92,7 +92,7 @@ def render(name, umbrella, roots):
         "//  %s.hpp" % name,
         "//",
         "//  GENERATED from <%s> by tooling's scripts/single_include.py: never edit by hand." % umbrella,
-        "//  Regenerate with `make single-include`; CI fails while it is stale.",
+        "//  Download it from the library's release, or build it with `make single-include`.",
         "//",
         "",
     ]
@@ -104,6 +104,7 @@ def main(argv):
     ap.add_argument("--root", default=".")
     ap.add_argument("--config")
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--out", help="the directory to write into (default: single_include_dir)")
     args = ap.parse_args(argv)
     try:
         conf = tooling_conf.load(args.root, args.config)
@@ -111,7 +112,7 @@ def main(argv):
         files = conf.prefixed("single_include")
         if not files:
             raise tooling_conf.ConfigError("%s: no single_include.<name> line" % conf.path)
-        out_dir = os.path.join(root, conf.get("single_include_dir", "single_include"))
+        out_dir = os.path.abspath(args.out) if args.out else os.path.join(root, conf.get("single_include_dir", "single_include"))
         roots = [os.path.realpath(os.path.join(root, d)) for d in conf.list("single_include_inline", conf.include_dir())]
         for d in roots:
             if not os.path.isdir(d):
@@ -131,17 +132,10 @@ def main(argv):
             if old != text:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(text)
-                print("%s: wrote %s" % (TOOL, os.path.relpath(path, root)))
+                print("%s: wrote %s" % (TOOL, path))
         return 0
 
     problems = []
-    for name, (text, _seen) in rendered.items():
-        path = os.path.join(out_dir, name + ".hpp")
-        rel = os.path.relpath(path, root)
-        if not os.path.exists(path):
-            problems.append("%s is missing: run `make single-include` and commit it" % rel)
-        elif open(path, encoding="utf-8").read() != text:
-            problems.append("%s is stale: run `make single-include` and commit it" % rel)
     contained = set().union(*(seen for _text, seen in rendered.values()))
     for d, _dirs, names in os.walk(include_root):
         for n in sorted(names):
@@ -153,18 +147,12 @@ def main(argv):
                 problems.append("%s is opted out (single_include_opt_in) but a single include contains it" % rel)
             elif p not in opt_in and p not in contained:
                 problems.append("%s is in no single include: include it from the umbrella, or opt it out" % rel)
-    if os.path.isdir(out_dir):
-        written = {name + ".hpp" for name in files}
-        for n in sorted(os.listdir(out_dir)):
-            if n not in written:
-                problems.append("%s is written by no single_include.<name> line: delete it or configure it"
-                                % os.path.relpath(os.path.join(out_dir, n), root))
     for p in problems:
         print("%s: %s" % (TOOL, p), file=sys.stderr)
     if problems:
-        print("%s: FAILED - the single include must be fresh and complete" % TOOL, file=sys.stderr)
+        print("%s: FAILED - the single include must hold every public header" % TOOL, file=sys.stderr)
         return 1
-    print("%s: ok - %d file(s), fresh and complete" % (TOOL, len(files)))
+    print("%s: ok - %d file(s), complete" % (TOOL, len(files)))
     return 0
 
 

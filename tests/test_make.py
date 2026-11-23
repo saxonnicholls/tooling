@@ -74,9 +74,7 @@ class MakeTest(unittest.TestCase):
 
     def test_test_checks_then_configures_builds_and_runs_every_ctest(self):
         lines = self.dry("test")
-        self.assertIn("single_include.py --root", lines[0])   # rewritten first, so a local gate never runs stale
-        self.assertFalse(lines[0].endswith("--check"), lines[0])
-        self.assertIn("check_version.py", lines[1])
+        self.assertIn("check_version.py", lines[0])
         configure = self.line(lines, "cmake -S . -B build ")
         self.assertIn("-DCMAKE_BUILD_TYPE=Release", configure)
         self.assertIn("-DCMAKE_CXX_COMPILER=c++", configure)
