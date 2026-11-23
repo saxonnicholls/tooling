@@ -121,6 +121,14 @@ These are the principles behind every rule below. When a rule is unclear, these 
   - a **pure virtual interface**, for choice at run time.
 - **Adapters both ways.** A model of the concept is usable through the virtual interface, and an implementation of the
   virtual interface models the concept.
+- **Mirrored headers.**
+  - Every pure virtual interface in `interfaces/<capability>.hpp` has its concept in `concepts/<capability>.hpp`. The
+    adapters sit with the interface.
+  - The reference implementation and the conformance kit are headers of their own beside them.
+- **Unit tests for both:**
+  - `tests/concepts/<capability>_test.cpp` proves at compile time that the reference implementation and the adapters
+    model the concept, and that non-conforming types do not;
+  - `tests/interfaces/<capability>_test.cpp` runs the conformance kit through both forms.
 - **One conformance kit** tests both forms.
 - **Neither form exists alone.** `check_interfaces.py` fails on:
   - a class with pure virtual functions that has no concept twin;
