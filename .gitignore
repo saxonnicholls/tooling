@@ -1,0 +1,6 @@
+.credentials/*
+!.credentials/*.env.example
+*.env
+!*.env.example
+.DS_Store
+build*/
