@@ -1,0 +1,13 @@
+#
+#  Doxyfile.in
+#  snicholls-tooling test fixture
+#
+#  Copyright 2010-2026 Saxon Herschel Nicholls
+#
+PROJECT_NAME     = snicholls-fixture
+INPUT            = @CMAKE_CURRENT_SOURCE_DIR@/include
+RECURSIVE        = YES
+OUTPUT_DIRECTORY = @CMAKE_CURRENT_BINARY_DIR@/docs
+GENERATE_LATEX   = NO
+QUIET            = YES
+WARN_AS_ERROR    = FAIL_ON_WARNINGS

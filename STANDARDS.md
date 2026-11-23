@@ -5,7 +5,7 @@ This is the one copy of the standards that every repository in the snicholls fam
 Where this file is silent, snicholls-core's `CLAUDE.md` is the reference.
 
 Each standard is enforced by a check or a reusable workflow in this repository, not by convention. A standard without
-a check is a defect in tooling.
+a check is a defect in tooling. Every check reads the repository's `tooling.conf`; the README says how to adopt them.
 
 ## 0. How we write C++
 
@@ -110,7 +110,8 @@ These are the principles behind every rule below. When a rule is unclear, these 
   that owner.
 - **Bumps.** Each bump is a commit of its own: `third_party: bump <name> <old> -> <new>`.
 - **Version checks.** Semantic versions are written in three places: the version header, `project(... VERSION)` and
-  the tag. `check_version.py` fails if they disagree.
+  the tag. `check_version.py` fails if they disagree. It runs as the CTest `check.version`, and with
+  `--tag <tag>` before a release is tagged.
 - **Releases.** A release is a tag on a commit where every blocking CI leg is green. A repository's first release is
   `v0.1.0`.
 
@@ -133,6 +134,8 @@ These are the principles behind every rule below. When a rule is unclear, these 
 - **Neither form exists alone.** `check_interfaces.py` fails on:
   - a class with pure virtual functions that has no concept twin;
   - a capability concept that has no virtual twin.
+
+  It also fails when either form lacks its unit test. It runs as the CTest `check.interfaces`.
 - **Standard types only.** Interfaces use standard C++ types. The interface lives in the lowest repository that can
   state it; implementations live where their dependencies are.
 
@@ -158,7 +161,7 @@ These are the principles behind every rule below. When a rule is unclear, these 
   README links to it.
 - **Tests and demos mirror the sources.** `include/<lib>/<area>/<name>.hpp` has `tests/<area>/<name>_test.cpp` and
   `demos/<area>/<name>_demo.cpp`. A demo exits non-zero when its result is not what it documents. `check_mirror.py`
-  enforces this.
+  enforces this, as the CTest `check.mirror`.
 - **Exception:** ts-moveables keeps its own documentation approach.
 
 ## 5. Docker containers
@@ -189,6 +192,8 @@ These are the principles behind every rule below. When a rule is unclear, these 
   - every port and secret taken from the environment.
 - **The local gate** is macOS plus `test_ubuntu.sh`, which builds each configuration fresh in the build image with
   warnings as errors: GCC and Clang, Release and Debug, and AddressSanitizer with UBSan.
+  - It is run as `third_party/tooling/scripts/test_ubuntu.sh`, or with `--quick` for one configuration.
+  - The repository's `tooling.conf` names its CMake options; the README lists the eight configurations.
 - **Test services** are Compose profiles in this repository, each with a smoke test in CI:
   - later, a crypto test network: development Ethereum chains with a fixed genesis, Tron, and Bitcoin regtest;
   - Postgres;
@@ -242,5 +247,6 @@ These are the principles behind every rule below. When a rule is unclear, these 
   - lower_snake for types, functions and files;
   - CamelCase template parameters;
   - macros with the library's prefix;
-  - named header guards.
+  - named header guards, which `snicholls_header_check()` (`cmake/SnichollsTooling.cmake`) checks as it compiles each
+    header on its own, twice.
 - Public repositories name nothing private: no private repository, product, person, credential or local path.

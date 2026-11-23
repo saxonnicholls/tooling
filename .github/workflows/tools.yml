@@ -1,0 +1,42 @@
+#
+#  tools.yml
+#  snicholls-tooling
+#
+#  Copyright 2010-2026 Saxon Herschel Nicholls
+#
+#  Tests every tool against the fixture repositories, on every push and pull request: the checks and the CMake module
+#  on Linux and macOS (tests/test_checks.py, tests/test_cmake.py), shellcheck over every script, and the gate itself,
+#  run for real in Docker (tests/gate_test.sh).
+#
+name: tools
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: The checks, the CMake module and the gate's plan
+        run: python3 -m unittest discover -s tests -v
+      - name: shellcheck
+        if: runner.os == 'Linux'
+        run: shellcheck scripts/*.sh tests/*.sh
+
+  gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: The gate, in both images, against the passing fixture and the failing one
+        run: tests/gate_test.sh

@@ -23,7 +23,7 @@ set -euo pipefail
 name="${1:?usage: build_image.sh <ubuntu-24.04|ubuntu-26.04>}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dir="$here/docker/$name"
-[ -f "$dir/Dockerfile" ] || { echo "build_image: no image named '$name' (have: $(ls "$here/docker" | tr '\n' ' '))" >&2; exit 2; }
+[ -f "$dir/Dockerfile" ] || { echo "build_image: no image named '$name' (have: $(cd "$here/docker" && echo */ | tr -d /))" >&2; exit 2; }
 command -v docker >/dev/null || { echo "build_image: docker is not installed" >&2; exit 2; }
 docker info >/dev/null 2>&1 || { echo "build_image: docker is not running" >&2; exit 2; }
 
