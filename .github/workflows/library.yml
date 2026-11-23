@@ -320,7 +320,7 @@ jobs:
           rm -rf "${site:?}/$DEST" && mkdir -p "$site/$DEST" && cp -R "$HTML/." "$site/$DEST/"
           touch "$site/.nojekyll"
           # shellcheck disable=SC2012  # the folders are main and vX.Y.Z
-          latest=$(cd "$site" && ls -d v*/ 2>/dev/null | tr -d / | sort -V | tail -1 || true)
+          latest=$(cd "$site" && { ls -d v*/ 2>/dev/null || true; } | tr -d / | sort -V | tail -1)
           target=${latest:-main}
           # shellcheck disable=SC2012  # the folders are main and vX.Y.Z
           versions="$(cd "$site" && ls -d main v*/ 2>/dev/null | tr -d / | sort -V | sed 's|.*|<a href="&/">&</a>|' | paste -sd ' ' -)"
