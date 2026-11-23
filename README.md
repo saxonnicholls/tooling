@@ -35,8 +35,12 @@ Licence: MIT ([LICENSE](LICENSE)).
    ```cmake
    include(third_party/tooling/cmake/SnichollsTooling.cmake)
    snicholls_header_check(my_lib_header_check LINK my::lib)   # then apply your warning options to it
-   snicholls_tooling_add_checks()                             # CTests check.mirror, check.version, check.interfaces
+   snicholls_single_include_check(my_lib_single_include)      # single_include/<name>.hpp compiles on its own
+   snicholls_tooling_add_checks()   # CTests check.mirror, check.version, check.interfaces, check.single_include
    ```
+
+   Then write the single include once and commit it: `make single-include` (it needs a `single_include.<name>` line
+   in `tooling.conf`).
 
    The CMake options the tools set are `<option_prefix>WERROR`, `SANITIZE` (e.g. `address,undefined`),
    `BUILD_DOCS` (a `docs` target), `BUILD_BENCHMARKS` and, if the repository has it, `BUILD_TESTS`.
@@ -113,6 +117,10 @@ spaces and are not quoted. Flags are `yes` or `no`. A key appears once. Python, 
 | `version_header` | version | default `<include_root>/version.hpp` |
 | `version_file.<label>` | version | `<path> <regex>`: one more copy of the version; the regex's groups, joined with `.` |
 | `interfaces_exempt` | interfaces | class names allowed pure virtual functions outside `interfaces/` |
+| `single_include.<name>` | single include | the umbrella header as it is included (`snicholls/core/core.hpp`), flattened into `<single_include_dir>/<name>.hpp`; at least one (required) |
+| `single_include_dir` | single include | default `single_include` |
+| `single_include_inline` | single include | the include directories whose headers are expanded (default `include_dir`); add each pinned library's, e.g. `include third_party/core/include` |
+| `single_include_opt_in` | single include | headers under `include_root` left out on purpose, e.g. one that links a third party |
 
 ## The gate: `scripts/test_ubuntu.sh`
 
@@ -241,6 +249,7 @@ them as CTests with the label `boundary`.
     python3 third_party/tooling/scripts/check_mirror.py
     python3 third_party/tooling/scripts/check_version.py [--tag vX.Y.Z]   # or RELEASE_TAG in the environment
     python3 third_party/tooling/scripts/check_interfaces.py
+    python3 third_party/tooling/scripts/single_include.py [--check]
 
 - **`check_mirror.py`** (STANDARDS section 4):
   - every header has its test, and every public header its demo;
@@ -256,6 +265,19 @@ them as CTests with the label `boundary`.
   - no class with pure virtual functions lives elsewhere (`detail/` and `interfaces_exempt` excepted);
   - a header in `interfaces/` with no pure virtual class (an adapter, the reference implementation, the conformance
     kit) is support and needs no twin.
+
+- **`single_include.py`** (section 2): without `--check` it rewrites `single_include/` (`make single-include`, and
+  first in `make test`). With `--check` it fails when a file is stale or missing, when a header under `include_root`
+  is in no single include and not opted out, when an opted-out header is included anyway, and when a file in
+  `single_include/` is written by no `single_include.<name>` line. Headers found in `single_include_inline` are
+  expanded once each, by real path; every other include is kept as written.
+
+## The single-include compile check
+
+    snicholls_single_include_check(<target> [COMPILE_OPTIONS <option>...] [CXX_STANDARD <n>] [CONFIG <tooling.conf>])
+
+An OBJECT library with one translation unit per `single_include.<name>`, which includes the file with no other include
+directory: it proves the single include self-contained, as `--check` proves it fresh.
 
 ## The header check: `cmake/SnichollsTooling.cmake`
 

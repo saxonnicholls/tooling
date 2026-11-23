@@ -11,8 +11,11 @@
 #      # every public header compiles on its own, twice, behind its named guard
 #      snicholls_header_check(my_lib_header_check LINK my::lib)
 #
-#      # check_mirror.py, check_version.py and check_interfaces.py as CTests (label boundary)
+#      # check_mirror.py, check_version.py, check_interfaces.py and single_include.py --check as CTests (label boundary)
 #      snicholls_tooling_add_checks()
+#
+#      # every single_include/<name>.hpp compiles on its own, with nothing but the standard library
+#      snicholls_single_include_check(my_lib_single_include COMPILE_OPTIONS -Werror)
 #
 #  snicholls_header_check(<target>
 #      [LINK <library>...]            what the headers need: normally the library's own target
@@ -26,8 +29,16 @@
 #  header, checks that guard_prefix + <path under include_root> (snicholls_core_meta_concepts_hpp) is defined, and
 #  includes it again. Without guard_prefix the guard is not checked.
 #
-#  snicholls_tooling_add_checks([MIRROR] [VERSION] [INTERFACES] [LABELS <label>...] [CONFIG <tooling.conf>])
-#  adds the named checks (default all three) as CTests check.mirror, check.version and check.interfaces.
+#  snicholls_single_include_check(<target> [COMPILE_OPTIONS <option>...] [CXX_STANDARD <n>] [CONFIG <tooling.conf>])
+#
+#  defines an OBJECT library <target> with one translation unit per single_include.<name> line, which includes
+#  <single_include_dir>/<name>.hpp with no other include directory. single_include.py --check proves the file fresh;
+#  this proves it self-contained.
+#
+#  snicholls_tooling_add_checks([MIRROR] [VERSION] [INTERFACES] [SINGLE_INCLUDE] [LABELS <label>...]
+#                               [CONFIG <tooling.conf>])
+#  adds the named checks (default all four) as CTests check.mirror, check.version, check.interfaces and
+#  check.single_include.
 #
 
 include_guard(GLOBAL)
@@ -131,7 +142,7 @@ function(snicholls_header_check target)
 endfunction()
 
 function(snicholls_tooling_add_checks)
-    cmake_parse_arguments(PARSE_ARGV 0 arg "MIRROR;VERSION;INTERFACES" "CONFIG" "LABELS")
+    cmake_parse_arguments(PARSE_ARGV 0 arg "MIRROR;VERSION;INTERFACES;SINGLE_INCLUDE" "CONFIG" "LABELS")
     if(NOT arg_CONFIG)
         set(arg_CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/tooling.conf")
     endif()
@@ -139,21 +150,60 @@ function(snicholls_tooling_add_checks)
         set(arg_LABELS boundary)
     endif()
     set(_checks)
-    foreach(_check IN ITEMS MIRROR VERSION INTERFACES)
+    foreach(_check IN ITEMS MIRROR VERSION INTERFACES SINGLE_INCLUDE)
         if(arg_${_check})
             list(APPEND _checks ${_check})
         endif()
     endforeach()
     if(NOT _checks)
-        set(_checks MIRROR VERSION INTERFACES)
+        set(_checks MIRROR VERSION INTERFACES SINGLE_INCLUDE)
     endif()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     get_filename_component(_repo "${arg_CONFIG}" DIRECTORY)
     foreach(_check IN LISTS _checks)
         string(TOLOWER "${_check}" _name)
+        if(_name STREQUAL "single_include")
+            set(_script single_include.py)
+            set(_extra --check)
+        else()
+            set(_script check_${_name}.py)
+            set(_extra)
+        endif()
         add_test(NAME check.${_name}
-                 COMMAND Python3::Interpreter "${SNICHOLLS_TOOLING_DIR}/scripts/check_${_name}.py"
-                         --root "${_repo}" --config "${arg_CONFIG}")
+                 COMMAND Python3::Interpreter "${SNICHOLLS_TOOLING_DIR}/scripts/${_script}"
+                         --root "${_repo}" --config "${arg_CONFIG}" ${_extra})
         set_tests_properties(check.${_name} PROPERTIES LABELS "${arg_LABELS}")
     endforeach()
+endfunction()
+
+function(snicholls_single_include_check target)
+    cmake_parse_arguments(PARSE_ARGV 1 arg "" "CXX_STANDARD;CONFIG" "COMPILE_OPTIONS")
+    if(NOT arg_CONFIG)
+        set(arg_CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/tooling.conf")
+    endif()
+    file(STRINGS "${arg_CONFIG}" _lines REGEX "^[ \t]*single_include\\.[A-Za-z0-9_.+-]+[ \t]*=")
+    if(NOT _lines)
+        message(FATAL_ERROR "snicholls_single_include_check: ${arg_CONFIG} has no single_include.<name> line")
+    endif()
+    snicholls_tooling_read_config("${arg_CONFIG}" _conf)
+    if(NOT DEFINED _conf_single_include_dir)
+        set(_conf_single_include_dir single_include)
+    endif()
+    get_filename_component(_repo "${arg_CONFIG}" DIRECTORY)
+    set(_sources)
+    foreach(_line IN LISTS _lines)
+        string(REGEX REPLACE "^[ \t]*single_include\\.([A-Za-z0-9_.+-]+).*$" "\\1" _name "${_line}")
+        set(_cpp "${CMAKE_CURRENT_BINARY_DIR}/${target}/${_name}.cpp")
+        file(CONFIGURE OUTPUT "${_cpp}" CONTENT "#include \"${_name}.hpp\"\n" @ONLY)
+        list(APPEND _sources "${_cpp}")
+    endforeach()
+    add_library(${target} OBJECT ${_sources})
+    target_include_directories(${target} PRIVATE "${_repo}/${_conf_single_include_dir}")
+    if(arg_COMPILE_OPTIONS)
+        target_compile_options(${target} PRIVATE ${arg_COMPILE_OPTIONS})
+    endif()
+    if(arg_CXX_STANDARD)
+        set_target_properties(${target} PROPERTIES
+            CXX_STANDARD ${arg_CXX_STANDARD} CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    endif()
 endfunction()

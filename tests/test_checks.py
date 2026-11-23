@@ -368,6 +368,61 @@ class InterfacesTest(Fixture):
         self.passes("interfaces")
 
 
+
+class SingleIncludeTest(Fixture):
+    def run_si(self, *args):
+        p = subprocess.run([sys.executable, os.path.join(TOOLING, "scripts", "single_include.py"), "--root",
+                            self.root, *args], capture_output=True, text=True)
+        return p.returncode, p.stdout + p.stderr
+
+    def check(self, code, message=""):
+        got, out = self.run_si("--check")
+        self.assertEqual(got, code, out)
+        self.assertIn(message, out)
+        return out
+
+    def test_the_fixture_is_fresh_and_complete(self):
+        self.check(0, "1 file(s), fresh and complete")
+
+    def test_a_changed_header_makes_it_stale_until_rewritten(self):
+        self.edit(INC + "/widget.hpp", "namespace snicholls", "// a change\nnamespace snicholls")
+        self.check(1, "single_include/snicholls_fixture.hpp is stale: run `make single-include`")
+        self.assertEqual(self.run_si()[0], 0)
+        self.check(0)
+
+    def test_a_missing_file_fails(self):
+        self.remove("single_include/snicholls_fixture.hpp")
+        self.check(1, "single_include/snicholls_fixture.hpp is missing")
+
+    def test_every_header_is_expanded_once_and_standard_headers_are_kept(self):
+        with open(self.path("single_include/snicholls_fixture.hpp"), encoding="utf-8") as f:
+            text = f.read()
+        self.assertNotIn("#include <snicholls/", text)
+        self.assertIn("GENERATED from <snicholls/fixture/fixture.hpp>", text)
+        self.assertEqual(text.count("#define snicholls_fixture_widget_hpp"), 1)
+
+    def test_a_header_outside_the_umbrella_fails_unless_opted_in(self):
+        self.write(INC + "/loose.hpp", "#ifndef snicholls_fixture_loose_hpp\n#define snicholls_fixture_loose_hpp\n#endif\n")
+        self.check(1, INC + "/loose.hpp is in no single include")
+        self.conf("single_include_opt_in = loose.hpp   # links a third party")
+        self.check(0)
+
+    def test_an_opted_in_header_that_is_included_fails(self):
+        self.conf("single_include_opt_in = widget.hpp")
+        self.check(1, "widget.hpp is opted out (single_include_opt_in) but a single include contains it")
+
+    def test_an_orphan_file_fails(self):
+        self.write("single_include/old.hpp", "// nobody writes me\n")
+        self.check(1, "single_include/old.hpp is written by no single_include.<name> line")
+
+    def test_no_configured_file_is_a_configuration_error(self):
+        self.edit("tooling.conf", "single_include.snicholls_fixture", "# single_include.snicholls_fixture")
+        self.check(2, "no single_include.<name> line")
+
+    def test_an_unknown_umbrella_is_a_configuration_error(self):
+        self.conf("single_include.other = snicholls/fixture/nope.hpp")
+        self.check(2, "single_include.other: no header snicholls/fixture/nope.hpp")
+
 class ScannerTest(unittest.TestCase):
     def scan(self, src):
         return check_interfaces.scan(textwrap.dedent(src))

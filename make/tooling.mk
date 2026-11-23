@@ -13,7 +13,8 @@
 #      make test-werror     the same with <option_prefix>WERROR=ON, as CI does
 #      make asan            AddressSanitizer and UBSan, warnings as errors
 #      make docs            the documentation (tooling.conf docs = yes), in build-docs
-#      make check           check_version.py, check_mirror.py, check_interfaces.py
+#      make check           check_version.py, check_mirror.py, check_interfaces.py, single_include.py --check
+#      make single-include  rewrite single_include/ (make test does it first, so a local gate never runs stale)
 #      make ubuntu          the Ubuntu gate in Docker (scripts/test_ubuntu.sh; UBUNTU="--quick" for its arguments)
 #      make demos           build and run every demo with its output shown (CTest label demo), or make.demos
 #      make benchmarks      build the benchmarks in Release (benchmarks = yes) and run them: CTest label benchmark,
@@ -63,22 +64,26 @@ cmake --build $(1) --parallel $(JOBS)
 ctest --test-dir $(1) --output-on-failure
 endef
 
-.PHONY: test test-werror asan docs check ubuntu demos benchmarks clean
+.PHONY: test test-werror asan docs check single-include ubuntu demos benchmarks clean
 
-test: check
+test: single-include check
 	$(call tooling_build,$(BUILD),$(CONFIG),)
 
-test-werror: check
+test-werror: single-include check
 	$(call tooling_build,build-werror,$(CONFIG),-D$(TOOLING_PREFIX)WERROR=ON)
 
 asan: export UBSAN_OPTIONS ?= halt_on_error=1:print_stacktrace=1
-asan: check
+asan: single-include check
 	$(call tooling_build,build-asan,RelWithDebInfo,-D$(TOOLING_PREFIX)WERROR=ON -D$(TOOLING_PREFIX)SANITIZE=address$(,)undefined)
 
 check:
 	$(PYTHON) $(TOOLING_DIR)/scripts/check_version.py --root $(TOOLING_REPO)
 	$(PYTHON) $(TOOLING_DIR)/scripts/check_mirror.py --root $(TOOLING_REPO)
 	$(PYTHON) $(TOOLING_DIR)/scripts/check_interfaces.py --root $(TOOLING_REPO)
+	$(PYTHON) $(TOOLING_DIR)/scripts/single_include.py --root $(TOOLING_REPO) --check
+
+single-include:
+	$(PYTHON) $(TOOLING_DIR)/scripts/single_include.py --root $(TOOLING_REPO)
 
 docs:
 ifeq ($(TOOLING_DOCS),yes)

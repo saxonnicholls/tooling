@@ -59,7 +59,7 @@ class HeaderCheckTest(Fixture):
         p = subprocess.run(["ctest", "--test-dir", self.build, "-R", "^check\\.", "-L", "boundary"],
                            capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertRegex(p.stdout, r"100% tests passed(, 0 tests failed)? out of 3")
+        self.assertRegex(p.stdout, r"100% tests passed(, 0 tests failed)? out of 4")
 
     def test_a_check_ctest_fails_when_its_rule_does(self):
         self.remove("tests/version_test.cpp")

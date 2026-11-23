@@ -64,15 +64,19 @@ class MakeTest(unittest.TestCase):
 
     # What each target runs
 
-    def test_check_runs_the_three_checks(self):
+    def test_check_runs_the_four_checks(self):
         lines = self.dry("check")
         for check in ("version", "mirror", "interfaces"):
             self.assertIn("check_%s.py" % check, " ".join(lines))
-        self.assertEqual(len(lines), 3)
+        self.assertIn("single_include.py --root", lines[3])
+        self.assertTrue(lines[3].endswith("--check"), lines[3])
+        self.assertEqual(len(lines), 4)
 
     def test_test_checks_then_configures_builds_and_runs_every_ctest(self):
         lines = self.dry("test")
-        self.assertIn("check_version.py", lines[0])
+        self.assertIn("single_include.py --root", lines[0])   # rewritten first, so a local gate never runs stale
+        self.assertFalse(lines[0].endswith("--check"), lines[0])
+        self.assertIn("check_version.py", lines[1])
         configure = self.line(lines, "cmake -S . -B build ")
         self.assertIn("-DCMAKE_BUILD_TYPE=Release", configure)
         self.assertIn("-DCMAKE_CXX_COMPILER=c++", configure)

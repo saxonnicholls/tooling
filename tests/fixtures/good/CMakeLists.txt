@@ -48,6 +48,8 @@ endfunction()
 enable_testing()
 snicholls_header_check(snicholls_fixture_header_check LINK snicholls::fixture)
 snicholls_fixture_options(snicholls_fixture_header_check)
+snicholls_single_include_check(snicholls_fixture_single_include)
+snicholls_fixture_options(snicholls_fixture_single_include)
 snicholls_tooling_add_checks()
 
 if(SNICHOLLS_FIXTURE_IN_DERIVED_IMAGE)
