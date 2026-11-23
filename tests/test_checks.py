@@ -99,6 +99,26 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaises(tooling_conf.ConfigError):
             conf.flag("c", True)
 
+    def run_cli(self, *args):
+        p = subprocess.run([sys.executable, os.path.join(TOOLING, "scripts", "tooling_conf.py"), "--root", GOOD, *args],
+                           capture_output=True, text=True)
+        return p.returncode, p.stdout.strip(), p.stderr
+
+    def test_the_command_line_gets_a_value_or_its_default(self):
+        self.assertEqual(self.run_cli("get", "option_prefix"), (0, "SNICHOLLS_FIXTURE_", ""))
+        self.assertEqual(self.run_cli("get", "missing", "fallback")[:2], (0, "fallback"))
+        self.assertEqual(self.run_cli("get", "missing", "")[:2], (0, ""))
+        code, _, err = self.run_cli("get", "missing")
+        self.assertEqual(code, 1)
+        self.assertIn("sets no missing", err)
+
+    def test_the_command_line_reads_flags_as_yes_or_no(self):
+        self.assertEqual(self.run_cli("flag", "docs", "no")[:2], (0, "yes"))
+        self.assertEqual(self.run_cli("flag", "missing", "off")[:2], (0, "no"))
+        code, _, err = self.run_cli("flag", "name", "no")
+        self.assertEqual(code, 2)
+        self.assertIn("must be yes or no", err)
+
     def test_include_root_must_be_under_include_dir(self):
         conf = tooling_conf.Config("/", {"include_root": "src/x"}, "tooling.conf")
         with self.assertRaisesRegex(tooling_conf.ConfigError, "not under include_dir"):
@@ -400,7 +420,7 @@ class ScannerTest(unittest.TestCase):
         self.assertEqual(concepts, {"small": (5, "n")})
 
 
-class GatePlanTest(Fixture):
+class GatePlan(Fixture):
     """scripts/test_ubuntu.sh --plan: the configurations the gate would run, without Docker."""
 
     def plan(self, *args):
@@ -413,11 +433,14 @@ class GatePlanTest(Fixture):
         self.assertEqual(code, 0, err)
         return {line.split()[0]: line.split()[1:] for line in out.splitlines()[1:]}
 
+
+class GatePlanTest(GatePlan):
+
     def test_eight_configurations_in_two_images(self):
         configs = self.configs()
         self.assertEqual(list(configs), ["gcc-release", "gcc-debug", "clang-release", "clang-debug", "clang-asan",
                                          "gcc-asan", "gcc15-release", "gcc15-asan"])
-        self.assertEqual({c: v[0] for c, v in configs.items()},
+        self.assertEqual({c: v[0].split("+")[0] for c, v in configs.items()},
                          {c: "ubuntu-26.04" if c.startswith("gcc15") else "ubuntu-24.04" for c in configs})
         for args in configs.values():
             self.assertIn("-DSNICHOLLS_FIXTURE_WERROR=ON", args)
@@ -497,11 +520,104 @@ class GatePlanTest(Fixture):
         self.assertEqual(code, 2)
         self.assertIn("option_prefix", err)
 
+    def test_list_names_the_configurations_this_run(self):
+        def names(*args):
+            p = subprocess.run(["bash", os.path.join(TOOLING, "scripts", "test_ubuntu.sh"), "--repo", self.root,
+                                "--list", *args], capture_output=True, text=True)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            return p.stdout.split()
+        self.conf("extra.clang-tsan = ubuntu-24.04 -DCMAKE_CXX_COMPILER=clang++")
+        self.assertEqual(names(), list(self.configs()))
+        self.assertEqual(names()[-1], "clang-tsan")
+        self.assertEqual(names("--quick"), ["gcc-release"])
+        self.assertEqual(names("--only", "gcc-asan,clang-tsan"), ["gcc-asan", "clang-tsan"])
+
+    def test_image_needs_a_configuration_name(self):
+        code, _, err = self.plan("--image", "msvc")
+        self.assertEqual(code, 2)
+        self.assertIn("--image: no configuration 'msvc'", err)
+
     def test_no_config_is_a_configuration_error(self):
         self.remove("tooling.conf")
         code, _, err = self.plan()
         self.assertEqual(code, 2)
         self.assertIn("tooling.conf", err)
+
+
+
+class DerivedImagePlanTest(GatePlan):
+    """image and image.<config>: a configuration runs in the repository's own image, derived from its standard one."""
+
+    DOCKERFILE = "docker/ci/Dockerfile"
+
+    def setUp(self):
+        super().setUp()
+        self.edit("tooling.conf", "image.gcc-debug = docker/ci/Dockerfile", "")
+        self.edit("tooling.conf", "cmake.gcc-debug = -DSNICHOLLS_FIXTURE_IN_DERIVED_IMAGE=ON", "")
+
+    def test_the_fixture_runs_gcc_debug_in_its_own_image(self):
+        shutil.rmtree(self.root)
+        shutil.copytree(GOOD, self.root)
+        configs = self.configs()
+        self.assertEqual(configs["gcc-debug"][0], "ubuntu-24.04+" + self.DOCKERFILE)
+        self.assertIn("-DSNICHOLLS_FIXTURE_IN_DERIVED_IMAGE=ON", configs["gcc-debug"])
+        self.assertEqual([c for c, v in configs.items() if "+" in v[0]], ["gcc-debug"])
+
+    def test_without_image_keys_every_configuration_runs_in_a_standard_image(self):
+        self.assertFalse([c for c, v in self.configs().items() if "+" in v[0]])
+
+    def test_image_for_one_configuration(self):
+        self.conf("image.clang-asan = " + self.DOCKERFILE)
+        configs = self.configs()
+        self.assertEqual(configs["clang-asan"][0], "ubuntu-24.04+" + self.DOCKERFILE)
+        self.assertEqual(configs["clang-debug"][0], "ubuntu-24.04")
+
+    def test_image_for_every_configuration_on_each_ones_standard_image(self):
+        self.conf("image = " + self.DOCKERFILE)
+        self.conf("image.gcc15-asan = docker/other/Dockerfile")
+        self.write("docker/other/Dockerfile", "FROM ghcr.io/saxonnicholls/ubuntu-26.04@sha256:" + "0" * 64 + "\n")
+        configs = self.configs()
+        self.assertEqual(configs["gcc-release"][0], "ubuntu-24.04+" + self.DOCKERFILE)
+        self.assertEqual(configs["gcc15-release"][0], "ubuntu-26.04+" + self.DOCKERFILE)
+        self.assertEqual(configs["gcc15-asan"][0], "ubuntu-26.04+docker/other/Dockerfile")
+
+    def test_image_for_an_extra_configuration(self):
+        self.conf("extra.opencl = ubuntu-24.04 -DCMAKE_CXX_COMPILER=clang++")
+        self.conf("image.opencl = " + self.DOCKERFILE)
+        self.assertEqual(self.configs()["opencl"][0], "ubuntu-24.04+" + self.DOCKERFILE)
+
+    def fails_to_plan(self, message):
+        code, _, err = self.plan()
+        self.assertEqual(code, 2, err)
+        self.assertIn(message, err)
+
+    def test_an_image_for_no_configuration_is_a_configuration_error(self):
+        self.conf("image.msvc = " + self.DOCKERFILE)
+        self.fails_to_plan("image.msvc names no configuration")
+
+    def test_a_missing_dockerfile_is_a_configuration_error(self):
+        self.conf("image.gcc-asan = docker/none/Dockerfile")
+        self.fails_to_plan("image.gcc-asan: no Dockerfile docker/none/Dockerfile")
+
+    def test_a_dockerfile_from_another_base_is_refused(self):
+        self.edit(self.DOCKERFILE, "FROM ${TOOLING_IMAGE}", "FROM ubuntu:24.04")
+        self.conf("image.gcc-asan = " + self.DOCKERFILE)
+        self.fails_to_plan("the first FROM is ubuntu:24.04, not the ubuntu-24.04 image")
+
+    def test_a_published_image_of_the_wrong_standard_image_is_refused(self):
+        self.edit(self.DOCKERFILE, "FROM ${TOOLING_IMAGE}", "FROM ghcr.io/saxonnicholls/ubuntu-24.04:0.1.0")
+        self.conf("image = " + self.DOCKERFILE)
+        self.fails_to_plan("the first FROM is ghcr.io/saxonnicholls/ubuntu-24.04:0.1.0, not the ubuntu-26.04 image")
+
+    def test_a_later_stage_from_elsewhere_is_refused(self):
+        self.edit(self.DOCKERFILE, "FROM ${TOOLING_IMAGE}", "FROM ${TOOLING_IMAGE} AS build\nFROM debian:12")
+        self.conf("image.gcc-asan = " + self.DOCKERFILE)
+        self.fails_to_plan("FROM debian:12 is neither the ubuntu-24.04 image nor an earlier stage")
+
+    def test_a_later_stage_from_an_earlier_one_is_allowed(self):
+        self.edit(self.DOCKERFILE, "FROM ${TOOLING_IMAGE}", "FROM ${TOOLING_IMAGE} AS build\nFROM build")
+        self.conf("image.gcc-asan = " + self.DOCKERFILE)
+        self.assertIn("+", self.configs()["gcc-asan"][0])
 
 
 if __name__ == "__main__":

@@ -2,9 +2,9 @@
 
 The development and test tooling of the snicholls libraries, held once for all of them:
 - the build images;
-- the local gate (`test_ubuntu.sh`);
+- the local gate (`test_ubuntu.sh`), derived build images, and the standard make targets (`make/tooling.mk`);
 - the checks (`check_mirror.py`, `check_version.py`, `check_interfaces.py`, the header-standalone CMake function);
-- the reusable CI workflows (build, documentation to GitHub Pages, images);
+- the reusable CI workflows (the library workflow with documentation to GitHub Pages, images);
 - the Docker test services (planned): Postgres, mail, an SMS sink, TURN, a log hub, and later a crypto test network;
 - the templates for a new library (`new_library.py`), `SECURITY.md` and threat models;
 - Markdown to PDF.

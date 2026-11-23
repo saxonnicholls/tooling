@@ -4,9 +4,10 @@
 #
 #  Copyright 2010-2026 Saxon Herschel Nicholls
 #
-#  Tests every tool against the fixture repositories, on every push and pull request: the checks and the CMake module
-#  on Linux and macOS (tests/test_checks.py, tests/test_cmake.py), shellcheck over every script, and the gate itself,
-#  run for real in Docker (tests/gate_test.sh).
+#  Tests every tool against the fixture repositories, on every push and pull request: the checks, the CMake module,
+#  make/tooling.mk and the workflows' static rules on Linux and macOS (python3 -m unittest), shellcheck over every
+#  script, actionlint over every workflow, the gate itself, run for real in Docker (tests/gate_test.sh), and the
+#  library workflow, called as a repository calls it, against the fixture repository (tests/fixture_repo.sh).
 #
 name: tools
 
@@ -28,11 +29,16 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: The checks, the CMake module and the gate's plan
+      - name: The checks, the CMake module, tooling.mk, the workflows and the gate's plan
         run: python3 -m unittest discover -s tests -v
       - name: shellcheck
         if: runner.os == 'Linux'
         run: shellcheck scripts/*.sh tests/*.sh
+      - name: actionlint (shellcheck inside the workflows too)
+        if: runner.os == 'Linux'
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint"
 
   gate:
     runs-on: ubuntu-24.04
@@ -40,3 +46,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: The gate, in both images, against the passing fixture and the failing one
         run: tests/gate_test.sh
+
+  library:
+    name: The library workflow, on the fixture
+    uses: ./.github/workflows/library.yml
+    with:
+      path: fixture-repo
+      prepare: tests/fixture_repo.sh fixture-repo

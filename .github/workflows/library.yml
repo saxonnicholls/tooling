@@ -1,0 +1,333 @@
+#
+#  library.yml
+#  snicholls-tooling
+#
+#  Copyright 2010-2026 Saxon Herschel Nicholls
+#
+#  The CI of a library, reusable (README "The library workflow"). A repository's ci.yml calls it at the tooling tag
+#  its submodule pins, and its tooling.conf says the rest:
+#
+#    - the checks: check_version.py (against the tag, on a tag push), check_mirror.py, check_interfaces.py;
+#    - Linux x86-64 and ARM64: each of the gate's configurations (scripts/test_ubuntu.sh --only <config>) in its
+#      own job, in tooling's images or the repository's derived ones: GCC and Clang, Release with the benchmark smoke
+#      runs and the documentation, Debug, ASan+UBSan;
+#    - macOS ARM64 and x86-64, Apple Clang: Release with warnings as errors and the benchmark smoke runs, then Debug
+#      at -O0 with asserts live;
+#    - Windows, MSVC: Release with warnings as errors, not blocking by default;
+#    - the documentation with the pinned Doxygen, published to GitHub Pages when asked: main to /main/, each release
+#      tag to /vX.Y.Z/, the site's root to the newest release.
+#
+#  Every leg blocks except Windows (msvc_continue_on_error). Jobs hold contents: read, except the documentation job,
+#  which has what the calling job grants it: contents: write when pages is true, so it can push gh-pages.
+#
+name: library
+
+on:
+  workflow_call:
+    inputs:
+      path:
+        description: The repository, relative to the checkout's root
+        type: string
+        default: "."
+      tooling:
+        description: tooling's checkout, relative to path (the pinned submodule)
+        type: string
+        default: third_party/tooling
+      prepare:
+        description: A bash command run from the checkout's root, after the checkout, in every job
+        type: string
+        default: ""
+      linux_arm64:
+        description: Run the Linux configurations on ARM64 as well as x86-64
+        type: boolean
+        default: true
+      macos:
+        description: Run the macOS legs
+        type: boolean
+        default: true
+      msvc:
+        description: Run the Windows MSVC leg
+        type: boolean
+        default: true
+      msvc_continue_on_error:
+        description: A Windows failure is reported, not gated on
+        type: boolean
+        default: true
+      benchmarks:
+        description: Build and smoke-run the benchmarks on macOS and Windows, when tooling.conf has benchmarks = yes
+        type: boolean
+        default: true
+      docs:
+        description: Build the documentation, when tooling.conf has docs = yes
+        type: boolean
+        default: true
+      pages:
+        description: Publish the documentation to GitHub Pages on a push to main or a release tag (contents write)
+        type: boolean
+        default: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  TOOLING: ${{ inputs.tooling }}
+  PREPARE: ${{ inputs.prepare }}
+
+jobs:
+  plan:
+    name: Plan (tooling.conf)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.path }}
+    outputs:
+      configurations: ${{ steps.plan.outputs.configurations }}
+      runners: ${{ steps.plan.outputs.runners }}
+      prefix: ${{ steps.plan.outputs.prefix }}
+      name: ${{ steps.plan.outputs.name }}
+      docs: ${{ steps.plan.outputs.docs }}
+      docs_html: ${{ steps.plan.outputs.docs_html }}
+      benchmarks: ${{ steps.plan.outputs.benchmarks }}
+      cmake: ${{ steps.plan.outputs.cmake }}
+      env: ${{ steps.plan.outputs.env }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Prepare
+        if: inputs.prepare != ''
+        working-directory: .
+        run: bash -c "$PREPARE"
+      - id: plan
+        name: Read tooling.conf
+        env:
+          ARM64: ${{ inputs.linux_arm64 }}
+        run: |
+          set -euo pipefail
+          [ -f "$TOOLING/scripts/test_ubuntu.sh" ] || { echo "::error::no tooling at $TOOLING (the submodule, checked out?)"; exit 1; }
+          conf() { python3 "$TOOLING/scripts/tooling_conf.py" "$@"; }
+          {
+            echo "configurations=$("$TOOLING/scripts/test_ubuntu.sh" --repo . --list | python3 -c 'import json, sys; print(json.dumps(sys.stdin.read().split()))')"
+            if [ "$ARM64" = true ]; then echo 'runners=["ubuntu-24.04", "ubuntu-24.04-arm"]'; else echo 'runners=["ubuntu-24.04"]'; fi
+            echo "prefix=$(conf get option_prefix)"
+            echo "name=$(conf get name "$(basename "$PWD")")"
+            echo "docs=$(conf flag docs no)"
+            echo "docs_html=$(conf get docs_html docs/html)"
+            echo "benchmarks=$(conf flag benchmarks no)"
+            echo "cmake=$(conf get cmake '')"
+            echo "env=$(conf get env '')"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  checks:
+    name: Checks (version, mirror, interfaces)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.path }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Prepare
+        if: inputs.prepare != ''
+        working-directory: .
+        run: bash -c "$PREPARE"
+      - name: The version is the same everywhere
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        run: python3 "$TOOLING/scripts/check_version.py"
+      - name: Every header has its registered test and demo
+        run: python3 "$TOOLING/scripts/check_mirror.py"
+      - name: Every interface has its concept, and the reverse
+        run: python3 "$TOOLING/scripts/check_interfaces.py"
+
+  linux:
+    name: Linux ${{ matrix.runner == 'ubuntu-24.04-arm' && 'ARM64' || 'x86-64' }} ${{ matrix.configuration }}
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.path }}
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: ${{ fromJSON(needs.plan.outputs.configurations) }}
+        runner: ${{ fromJSON(needs.plan.outputs.runners) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Prepare
+        if: inputs.prepare != ''
+        working-directory: .
+        run: bash -c "$PREPARE"
+      # 4 jobs on the x86-64 runners, 3 on ARM64, the tightest on memory: an unlimited -j runs GCC out of memory
+      - name: The gate's configuration, in its image
+        env:
+          CONFIGURATION: ${{ matrix.configuration }}
+          JOBS: ${{ matrix.runner == 'ubuntu-24.04-arm' && 3 || 4 }}
+        run: '"$TOOLING/scripts/test_ubuntu.sh" --repo . --only "$CONFIGURATION" -j "$JOBS"'
+
+  macos:
+    name: macOS ${{ matrix.arch }} Apple Clang
+    if: inputs.macos
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.path }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: ARM64
+            runner: macos-15
+            jobs: 3
+          - arch: x86-64
+            runner: macos-15-intel
+            jobs: 4
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: ${{ matrix.jobs }}
+      P: ${{ needs.plan.outputs.prefix }}
+      CMAKE_ARGS: ${{ needs.plan.outputs.cmake }}
+      BENCH: ${{ inputs.benchmarks && needs.plan.outputs.benchmarks == 'yes' && 'ON' || 'OFF' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Prepare
+        if: inputs.prepare != ''
+        working-directory: .
+        run: bash -c "$PREPARE"
+      - name: Environment (tooling.conf env)
+        env:
+          CONF_ENV: ${{ needs.plan.outputs.env }}
+        run: for kv in $CONF_ENV; do echo "$kv"; done >> "$GITHUB_ENV"
+      - name: Release (warnings are errors, benchmarks smoke-run)
+        run: |
+          # shellcheck disable=SC2086  # CMAKE_ARGS is a list (tooling.conf cmake), split on purpose
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=c++ \
+            "-D${P}WERROR=ON" "-D${P}BUILD_BENCHMARKS=$BENCH" $CMAKE_ARGS
+          cmake --build build --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+          ctest --test-dir build --output-on-failure
+      - name: Debug (-O0, asserts live)
+        run: |
+          rm -rf build
+          # shellcheck disable=SC2086  # CMAKE_ARGS is a list, split on purpose
+          cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS_DEBUG=-O0 -DCMAKE_CXX_COMPILER=c++ \
+            "-D${P}WERROR=ON" $CMAKE_ARGS
+          cmake --build build-debug --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+          ctest --test-dir build-debug --output-on-failure
+
+  windows:
+    name: Windows MSVC
+    if: inputs.msvc
+    needs: plan
+    runs-on: windows-2025
+    continue-on-error: ${{ inputs.msvc_continue_on_error }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.path }}
+    env:
+      P: ${{ needs.plan.outputs.prefix }}
+      CMAKE_ARGS: ${{ needs.plan.outputs.cmake }}
+      BENCH: ${{ inputs.benchmarks && needs.plan.outputs.benchmarks == 'yes' && 'ON' || 'OFF' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Prepare
+        if: inputs.prepare != ''
+        working-directory: .
+        run: bash -c "$PREPARE"
+      - name: Environment (tooling.conf env)
+        env:
+          CONF_ENV: ${{ needs.plan.outputs.env }}
+        run: for kv in $CONF_ENV; do echo "$kv"; done >> "$GITHUB_ENV"
+      - name: Release (warnings are errors, benchmarks smoke-run)
+        run: |
+          # shellcheck disable=SC2086  # CMAKE_ARGS is a list, split on purpose
+          cmake -S . -B build "-D${P}WERROR=ON" "-D${P}BUILD_BENCHMARKS=$BENCH" $CMAKE_ARGS
+          cmake --build build --config Release --parallel
+          ctest --test-dir build -C Release --output-on-failure
+
+  docs:
+    name: Documentation (warnings are errors)
+    if: inputs.docs && needs.plan.outputs.docs == 'yes'
+    needs: plan
+    runs-on: ubuntu-24.04
+    # No permissions of its own: it has the calling job's, contents: write when pages is true
+    concurrency:
+      group: ${{ inputs.pages && github.event_name == 'push' && format('pages-{0}', github.repository) || format('docs-{0}', github.run_id) }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: ${{ inputs.path }}
+    env:
+      P: ${{ needs.plan.outputs.prefix }}
+      CMAKE_ARGS: ${{ needs.plan.outputs.cmake }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: ${{ inputs.pages }}
+      - name: Prepare
+        if: inputs.prepare != ''
+        working-directory: .
+        run: bash -c "$PREPARE"
+      - name: Build the documentation in the gcc-release image (the pinned Doxygen)
+        run: |
+          set -euo pipefail
+          image="$("$TOOLING/scripts/test_ubuntu.sh" --repo . --image gcc-release)"
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e P -e CMAKE_ARGS -v "$PWD:/src" -w /src "$image" \
+            bash -c 'cmake -S . -B build-docs -G Ninja "-D${P}BUILD_DOCS=ON" "-D${P}BUILD_TESTS=OFF" $CMAKE_ARGS &&
+                     cmake --build build-docs --target docs'
+      # gh-pages holds generated HTML only, one folder per version; never edit it by hand
+      - name: Publish to GitHub Pages
+        if: inputs.pages && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        env:
+          DEST: ${{ github.ref_type == 'tag' && github.ref_name || 'main' }}
+          HTML: build-docs/${{ needs.plan.outputs.docs_html }}
+          TITLE: ${{ needs.plan.outputs.name }}
+        run: |
+          set -euo pipefail
+          site="$RUNNER_TEMP/site"
+          trap 'git worktree remove --force "$site" 2>/dev/null || true' EXIT
+          git branch -D gh-pages 2>/dev/null || true
+          if git fetch --depth 1 origin gh-pages 2>/dev/null; then
+            git worktree add "$site" FETCH_HEAD
+            git -C "$site" switch -C gh-pages
+          else
+            git worktree add --detach "$site"
+            git -C "$site" switch --orphan gh-pages
+          fi
+          rm -rf "${site:?}/$DEST" && mkdir -p "$site/$DEST" && cp -R "$HTML/." "$site/$DEST/"
+          touch "$site/.nojekyll"
+          # shellcheck disable=SC2012  # the folders are main and vX.Y.Z
+          latest=$(cd "$site" && ls -d v*/ 2>/dev/null | tr -d / | sort -V | tail -1 || true)
+          target=${latest:-main}
+          # shellcheck disable=SC2012  # the folders are main and vX.Y.Z
+          versions="$(cd "$site" && ls -d main v*/ 2>/dev/null | tr -d / | sort -V | sed 's|.*|<a href="&/">&</a>|' | paste -sd ' ' -)"
+          printf '<!DOCTYPE html>\n<meta charset="utf-8">\n<title>%s</title>\n<meta http-equiv="refresh" content="0; url=%s/">\n<p>The documentation for <a href="%s/">%s %s</a>; every version: %s</p>\n' \
+            "$TITLE" "$target" "$target" "$TITLE" "$target" "$versions" > "$site/index.html"
+          git -C "$site" add -A
+          if git -C "$site" diff --cached --quiet; then echo "nothing to publish"; exit 0; fi
+          git -C "$site" -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "docs: $DEST ($GITHUB_SHA)"
+          git -C "$site" push origin gh-pages

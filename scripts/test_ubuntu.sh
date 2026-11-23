@@ -13,6 +13,8 @@
 #      third_party/tooling/scripts/test_ubuntu.sh --only clang-asan,gcc15-asan
 #      third_party/tooling/scripts/test_ubuntu.sh -j 4        at most 4 compiles and tests at once, on 4 CPUs
 #      third_party/tooling/scripts/test_ubuntu.sh --plan      print the configurations and stop (no Docker)
+#      third_party/tooling/scripts/test_ubuntu.sh --list      print the names of the configurations and stop
+#      third_party/tooling/scripts/test_ubuntu.sh --image gcc-release   build that configuration's image, print its tag
 #      third_party/tooling/scripts/test_ubuntu.sh --repo <dir>   a repository other than the current one
 #
 #  Configurations, each a fresh CMake build of everything with -D<option_prefix>WERROR=ON, then every CTest:
@@ -38,6 +40,9 @@
 #      cmake.<config> = -DBAR=ON              ... for one configuration
 #      extra.<label>  = <image> <cmake args>  a configuration of the repository's own, e.g.
 #                                             extra.clang-tsan = ubuntu-24.04 -DCMAKE_CXX_COMPILER=clang++ ...
+#      image          = docker/ci/Dockerfile  every configuration runs in the repository's own image, derived from
+#                                             the configuration's standard one (scripts/build_image.sh)
+#      image.<config> = docker/ci/Dockerfile  ... one configuration does
 #      env            = KEY=value ...         environment for the builds and tests
 #      setup          = <shell command>       run in each container before the configurations
 #
@@ -58,6 +63,8 @@ QUICK=0
 PLAN=0
 ONLY=""
 JOBS=""
+LIST_ONLY=0
+IMAGE_OF=""
 
 usage() { awk 'NR > 7 && /^#/ { sub(/^# ?/, ""); print; next } NR > 7 { exit }' "${BASH_SOURCE[0]}"; }
 die() { echo "test_ubuntu: $*" >&2; exit 2; }
@@ -66,6 +73,9 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --quick) QUICK=1 ;;
         --plan) PLAN=1 ;;
+        --list) LIST_ONLY=1 ;;
+        --image) shift; IMAGE_OF="${1:-}"; [ -n "$IMAGE_OF" ] || die "--image needs a configuration name" ;;
+        --image=*) IMAGE_OF="${1#--image=}" ;;
         --only) shift; ONLY="${1:-}"; [ -n "$ONLY" ] || die "--only needs configuration names" ;;
         --only=*) ONLY="${1#--only=}" ;;
         --repo) shift; REPO="${1:-}"; [ -n "$REPO" ] || die "--repo needs a directory" ;;
@@ -162,6 +172,20 @@ for e in $EXTRAS; do
     [ -f "$TOOLING/docker/$img/Dockerfile" ] || die "tooling.conf: extra.$e names no image of tooling's ('$img')"
 done
 
+# The repository's own images: image (every configuration) and image.<config>, each a Dockerfile in the repository
+for i in $(conf_labels image); do
+    standard "$i" >/dev/null || case " $EXTRAS " in *" $i "*) ;; *) die "tooling.conf: image.$i names no configuration" ;; esac
+done
+image_of() {   # image_of <config> <standard image>: the image spec, "<standard>" or "<standard>+<Dockerfile>"
+    local key="image.$1" file
+    file="$(conf "$key")"
+    [ -n "$file" ] || { key=image; file="$(conf image)"; }
+    [ -n "$file" ] || { echo "$2"; return; }
+    case "$file" in *[[:space:]]*) die "tooling.conf: $key: one Dockerfile, with no spaces in its path" ;; esac
+    [ -f "$REPO/$file" ] || die "tooling.conf: $key: no Dockerfile $file in the repository"
+    echo "$2+$file"
+}
+
 # The configurations this run: --only, else --quick, else every configured one and every extra
 if [ -n "$ONLY" ]; then
     SELECTED="$(echo "$ONLY" | tr ',' ' ')"
@@ -174,6 +198,9 @@ elif [ "$QUICK" = 1 ]; then
 else
     SELECTED="$(words "$CONFIGURED $EXTRAS")"
 fi
+if [ -n "$IMAGE_OF" ]; then
+    standard "$IMAGE_OF" >/dev/null || case " $EXTRAS " in *" $IMAGE_OF "*) ;; *) die "--image: no configuration '$IMAGE_OF'" ;; esac
+fi
 
 # resolve <name>: "image|label|args" with the repository's arguments added
 resolve() {
@@ -184,8 +211,32 @@ resolve() {
         spec="$(conf "extra.$1")"; image="${spec%% *}"; label="$1"; args="${spec#"$image"}"
     fi
     args="-D${P}WERROR=ON $args $(conf cmake) $(conf "cmake.$1")"
+    image="$(image_of "$1" "$image")" || exit 2
     echo "$image|$label|$(words "$args")"
 }
+
+# build <image spec>: builds the image if need be (scripts/build_image.sh) and prints its tag
+build() {
+    case "$1" in
+        *+*) "$TOOLING/scripts/build_image.sh" "${1%%+*}" "$REPO/${1#*+}" ;;
+        *) "$TOOLING/scripts/build_image.sh" "$1" ;;
+    esac
+}
+
+# Every derived image starts FROM its standard image, checked before anything runs
+checked=""
+for c in $SELECTED $IMAGE_OF; do
+    spec="$(resolve "$c")"; spec="${spec%%|*}"
+    case "$spec" in *+*) ;; *) continue ;; esac
+    case " $checked " in *" $spec "*) continue ;; esac
+    "$TOOLING/scripts/build_image.sh" --check "${spec%%+*}" "$REPO/${spec#*+}" || exit 2
+    checked="$checked $spec"
+done
+
+if [ "$LIST_ONLY" = 1 ]; then
+    for c in $SELECTED; do echo "$c"; done
+    exit 0
+fi
 
 if [ "$PLAN" = 1 ]; then
     echo "test_ubuntu: $NAME"
@@ -201,6 +252,12 @@ fi
 
 command -v docker >/dev/null || die "docker is not installed"
 docker info >/dev/null 2>&1 || die "docker is not running"
+
+if [ -n "$IMAGE_OF" ]; then
+    spec="$(resolve "$IMAGE_OF")"
+    build "${spec%%|*}"
+    exit
+fi
 
 # The snapshot: tracked files that exist (a file deleted but not yet staged is skipped), no macOS metadata
 LIST="$(mktemp)"; OUT="$(mktemp)"; SNAPSHOT="$(mktemp)"
@@ -263,7 +320,7 @@ done
 
 first=1
 for img in $images; do
-    tag="$("$TOOLING/scripts/build_image.sh" "$img")" || { echo "  $img image                  FAILED" | tee -a "$OUT"; continue; }
+    tag="$(build "$img")" || { echo "  $img image                  FAILED" | tee -a "$OUT"; continue; }
     script="$(container_script)"
     labels=()
     lines=""

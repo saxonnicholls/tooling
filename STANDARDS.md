@@ -157,8 +157,8 @@ These are the principles behind every rule below. When a rule is unclear, these 
 - **Files** start with the copyright banner, then `/// \file`, `\brief` and `\ingroup`, and `\ingroup` stands on a line
   of its own.
 - **TypeScript: TSDoc,** in the same sections.
-- **Published.** The documentation is published to GitHub Pages by the `docs` workflow on every push to `main`, and the
-  README links to it.
+- **Published.** The documentation is published to GitHub Pages on every push to `main` and every release tag, by the
+  library workflow with `pages: true` (tooling's README, "The library workflow"), and the README links to it.
 - **Tests and demos mirror the sources.** `include/<lib>/<area>/<name>.hpp` has `tests/<area>/<name>_test.cpp` and
   `demos/<area>/<name>_demo.cpp`. A demo exits non-zero when its result is not what it documents. `check_mirror.py`
   enforces this, as the CTest `check.mirror`.
@@ -167,7 +167,8 @@ These are the principles behind every rule below. When a rule is unclear, these 
 ## 5. Docker containers
 
 - **Base images.** Every image starts `FROM` one of this repository's base images, pinned by digest. No repository
-  writes a base image of its own.
+  writes a base image of its own. A build image a repository needs is derived from a standard one and named in its
+  `tooling.conf`; `build_image.sh --check` refuses any other (tooling's README, "Derived images").
 - **The build images** are this repository's Ubuntu 24.04 and 26.04 images:
   - GCC 13 and 15;
   - Clang 18 with compiler-rt, so Clang's sanitizers link;
@@ -192,7 +193,8 @@ These are the principles behind every rule below. When a rule is unclear, these 
   - every port and secret taken from the environment.
 - **The local gate** is macOS plus `test_ubuntu.sh`, which builds each configuration fresh in the build image with
   warnings as errors: GCC and Clang, Release and Debug, and AddressSanitizer with UBSan.
-  - It is run as `third_party/tooling/scripts/test_ubuntu.sh`, or with `--quick` for one configuration.
+  - It is run as `third_party/tooling/scripts/test_ubuntu.sh`, or with `--quick` for one configuration; `make ubuntu`
+    and `make test-werror` come from `make/tooling.mk` (tooling's README, "The make targets").
   - The repository's `tooling.conf` names its CMake options; the README lists the eight configurations.
 - **Test services** are Compose profiles in this repository, each with a smoke test in CI:
   - later, a crypto test network: development Ethereum chains with a fixed genesis, Tron, and Bitcoin regtest;
@@ -222,7 +224,7 @@ These are the principles behind every rule below. When a rule is unclear, these 
   - rotating refresh tokens with revocation;
   - JWKS published and rotated.
 - **Transport:** TLS everywhere outside a single host.
-- **CI:**
+- **CI** is the library workflow (tooling's README, "The library workflow"), which holds these rules:
   - `permissions:` least privilege per job;
   - third-party actions pinned by commit SHA;
   - no secrets exposed to pull requests from forks.

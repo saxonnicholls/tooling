@@ -12,7 +12,13 @@
 #
 #  Lists are whitespace-separated, flags are yes/no (on/off, true/false, 1/0). A key appears at most once.
 #
+#  From the command line, for make and the workflows (exit 2 on a configuration error):
+#
+#      python3 tooling_conf.py [--root <dir>] [--config <file>] get <key> [<default>]   the value; 1 if absent
+#      python3 tooling_conf.py [--root <dir>] [--config <file>] flag <key> <default>    yes or no
+#
 
+import argparse
 import os
 import re
 import sys
@@ -107,3 +113,33 @@ def load_or_exit(args, tool):
     except ConfigError as e:
         print("%s: %s" % (tool, e), file=sys.stderr)
         sys.exit(2)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Reads one setting of a repository's tooling.conf.")
+    add_arguments(parser)
+    parser.add_argument("command", choices=("get", "flag"))
+    parser.add_argument("key")
+    parser.add_argument("default", nargs="?")
+    args = parser.parse_args(argv)
+    config = load_or_exit(args, "tooling_conf")
+    try:
+        if args.command == "flag":
+            if args.default is None:
+                parser.error("flag needs a default, yes or no")
+            default = Config(None, {"default": args.default}, "the default").flag("default", None)
+            print("yes" if config.flag(args.key, default) else "no")
+            return 0
+    except ConfigError as e:
+        print("tooling_conf: %s" % e, file=sys.stderr)
+        return 2
+    value = config.get(args.key, args.default)
+    if value is None:
+        print("tooling_conf: %s sets no %s" % (config.path, args.key), file=sys.stderr)
+        return 1
+    print(value)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
