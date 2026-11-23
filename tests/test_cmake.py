@@ -124,7 +124,8 @@ snicholls_header_check(cpp17_concepts HEADERS snicholls/fixture/concepts/greeter
         self.conf("this is not a setting")
         p = self.configure()
         self.assertNotEqual(p.returncode, 0)
-        self.assertIn("expected 'key = value'", p.stdout + p.stderr)
+        # CMake wraps a long message across lines on some platforms: compare with the whitespace normalised
+        self.assertIn("expected 'key = value'", " ".join((p.stdout + p.stderr).split()))
 
 
 if __name__ == "__main__":
