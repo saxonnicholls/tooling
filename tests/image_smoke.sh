@@ -57,6 +57,11 @@ case "$name" in
   *) echo "image_smoke: unknown image $name" >&2; exit 2 ;;
 esac
 
+# the fixture generators every repository runs as CTests need the full standard library, not python3-minimal
+python3 -c "import json, decimal, fractions, xml.etree.ElementTree, hashlib, zlib, random, sqlite3" \
+    || { echo "image_smoke: python3 lacks part of the standard library" >&2; exit 1; }
+echo "  python3 $(python3 -c 'import sys; print(sys.version.split()[0])') with the full standard library: ok"
+
 mkdir -p proj && cat > proj/CMakeLists.txt <<'CMAKE'
 cmake_minimum_required(VERSION 3.20)
 project(smoke CXX)
