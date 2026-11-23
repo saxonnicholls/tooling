@@ -1,0 +1,83 @@
+#
+#  images.yml
+#  snicholls-tooling
+#
+#  Copyright 2010-2026 Saxon Herschel Nicholls
+#
+#  Builds every standard image from scratch for amd64 and arm64 and runs its smoke test, on every push and pull
+#  request. On a release tag (vX.Y.Z) it also publishes them as ghcr.io/saxonnicholls/<image>:<version>; consumers
+#  pin the published digest.
+#
+name: images
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ubuntu-24.04, ubuntu-26.04]
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: docker/${{ matrix.image }}
+          load: true
+          tags: smoke/${{ matrix.image }}:ci
+          no-cache: true
+      - name: Smoke test
+        run: docker run --rm -v "$PWD/tests:/tests:ro" smoke/${{ matrix.image }}:ci bash /tests/image_smoke.sh ${{ matrix.image }}
+      - name: The local build script agrees
+        run: |
+          tag="$(scripts/build_image.sh ${{ matrix.image }})"
+          docker run --rm -v "$PWD/tests:/tests:ro" "$tag" bash /tests/image_smoke.sh ${{ matrix.image }}
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: image
+    strategy:
+      matrix:
+        image: [ubuntu-24.04, ubuntu-26.04]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          tags: type=semver,pattern={{version}}
+      - id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: docker/${{ matrix.image }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: true
+      - name: Digest
+        run: echo "${{ matrix.image }} ${{ steps.meta.outputs.version }} ${{ steps.push.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"

@@ -161,8 +161,11 @@ These are the principles behind every rule below. When a rule is unclear, these 
   - GCC 13 and 15;
   - Clang 18 with compiler-rt, so Clang's sanitizers link;
   - CMake and Ninja;
-  - the pinned Doxygen;
-  - Node, for the web and mobile builds.
+  - the pinned Doxygen.
+
+  `scripts/build_image.sh <image>` builds them locally, and each release publishes them as
+  `ghcr.io/saxonnicholls/<image>:<version>` for amd64 and arm64. A Node image for the web and mobile builds is the
+  next to come.
 - **Service images:**
   - built in stages;
   - run as a non-root user;
