@@ -422,6 +422,33 @@ class SingleIncludeTest(Fixture):
         self.edit(INC + "/widget.hpp", "namespace snicholls", "// a change\nnamespace snicholls")
         self.assertIn("// a change", self.generated())
 
+    def test_a_header_first_included_conditionally_is_written_again_where_it_is_unconditional(self):
+        # widget.hpp is first reached inside #if SOME_PLATFORM: where that is false, the later unconditional include
+        # must still bring its text, so it is written twice and its guard compiles it once
+        self.write(INC + "/platform.hpp", """\
+            #ifndef snicholls_fixture_platform_hpp
+            #define snicholls_fixture_platform_hpp
+            #if defined(SOME_PLATFORM)
+            #include <snicholls/fixture/widget.hpp>
+            #endif
+            #endif
+            """)
+        self.edit(INC + "/fixture.hpp", "#include <snicholls/fixture/widget.hpp>",
+                  "#include <snicholls/fixture/platform.hpp>\n#include <snicholls/fixture/widget.hpp>")
+        text = self.generated()
+        self.assertEqual(text.count("#define snicholls_fixture_widget_hpp"), 2)
+        out = os.path.join(self.tmp, "out")
+        use = os.path.join(self.tmp, "use.cpp")
+        with open(use, "w", encoding="utf-8") as f:
+            f.write('#include "snicholls_fixture.hpp"\nint main() { return 0; }\n')
+        for flags in ([], ["-DSOME_PLATFORM"]):
+            p = subprocess.run(["c++", "-std=c++20", "-fsyntax-only", "-Wall", "-Werror", "-I", out, *flags, use],
+                               capture_output=True, text=True)
+            self.assertEqual(p.returncode, 0, p.stderr)
+
+    def test_a_header_included_only_under_its_own_guard_is_written_once(self):
+        self.assertEqual(self.generated().count("#define snicholls_fixture_widget_hpp"), 1)
+
     def test_a_header_outside_the_umbrella_fails_unless_opted_in(self):
         self.write(INC + "/loose.hpp", "#ifndef snicholls_fixture_loose_hpp\n#define snicholls_fixture_loose_hpp\n#endif\n")
         self.check(1, INC + "/loose.hpp is in no single include")

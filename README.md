@@ -270,7 +270,9 @@ them as CTests with the label `boundary`.
 - **`single_include.py`** (section 2): without `--check` it writes every `single_include.<name>` file, into
   `single_include_dir` or `--out <dir>`. With `--check` it writes nothing and fails when a header under
   `include_root` is in no single include and not opted out, or when an opted-out header is included anyway. Headers
-  found in `single_include_inline` are expanded once each, by real path; every other include is kept as written.
+  found in `single_include_inline` are expanded where they are first included unconditionally, once each, by real
+  path; a header first reached inside an `#if` is written there too, and again at its next unconditional include,
+  so that no platform loses it (its guard compiles it once). Every other include is kept as written.
 
 ## The single-include compile check
 

@@ -46,12 +46,34 @@ TOOL = "single_include"
 _INCLUDE = re.compile(r'^\s*#\s*include\s*([<"])([^>"]+)[>"]')
 
 
+_COND_OPEN = re.compile(r"^\s*#\s*if")       # #if, #ifdef, #ifndef
+_COND_CLOSE = re.compile(r"^\s*#\s*endif\b")
+_GUARD = re.compile(r"^\s*#\s*ifndef\s+(\w+)")
+_DEFINE = re.compile(r"^\s*#\s*define\s+(\w+)")
+
+
+def guard_lines(lines):
+    """The line indices of a header's include guard (#ifndef G, #define G), or None: the guard is not a condition."""
+    code = [i for i, l in enumerate(lines) if l.strip() and not l.strip().startswith("//")]
+    if len(code) >= 2:
+        m, d = _GUARD.match(lines[code[0]]), _DEFINE.match(lines[code[1]])
+        if m and d and m.group(1) == d.group(1):
+            return code[0]
+    return None
+
+
 class Expander:
-    """Expands an umbrella header: each header found in an inline directory is written once, by its real path."""
+    """Expands an umbrella header: each header found in an inline directory is written where it is first included
+    unconditionally, once, by its real path.
+
+    A header first reached inside a conditional block (an #if other than its includer's guard) is written there too,
+    but not marked done: on a platform where that block is false its text would be missing, so the next unconditional
+    include writes it again, and its own guard keeps the second copy from being compiled twice."""
 
     def __init__(self, roots):
         self.roots = roots
-        self.seen = set()
+        self.done = set()      # written unconditionally: never again
+        self.seen = set()      # written at all: what the file contains
         self.out = []
 
     def resolve(self, name, quoted, from_dir):
@@ -62,21 +84,27 @@ class Expander:
                 return p
         return None
 
-    def expand(self, path, stack=()):
-        if path in self.seen:
+    def expand(self, path, stack=(), conditional=False):
+        if path in self.done or path in stack:   # a header inside its own expansion: its guard stops it
             return
-        if path in stack:
-            raise tooling_conf.ConfigError("an include cycle: " + " -> ".join(stack + (path,)))
+        if not conditional:
+            self.done.add(path)
         self.seen.add(path)
         with open(path, encoding="utf-8") as f:
             lines = f.read().split("\n")
         if lines and lines[-1] == "":
             lines.pop()
-        for line in lines:
+        guard = guard_lines(lines)
+        depth = 0
+        for i, line in enumerate(lines):
+            if _COND_OPEN.match(line):
+                depth += 0 if i == guard else 1
+            elif _COND_CLOSE.match(line):
+                depth = max(0, depth - 1)
             m = _INCLUDE.match(line)
             target = m and self.resolve(m.group(2), m.group(1) == '"', os.path.dirname(path))
             if target:
-                self.expand(target, stack + (path,))
+                self.expand(target, stack + (path,), conditional or depth > 0)
             else:
                 self.out.append(line)
 
