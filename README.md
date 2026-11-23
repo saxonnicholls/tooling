@@ -9,7 +9,7 @@ It provides:
 - the local Ubuntu gate;
 - the repository checks (tests and demos mirror the headers, versions agree, interfaces have both forms);
 - reusable GitHub workflows, including documentation published to GitHub Pages;
-- Docker test services: a local crypto test network, Postgres, mail and SMS sinks.
+- Docker test services (planned): Postgres, mail and SMS sinks, and later a local crypto test network.
 
 [STANDARDS.md](STANDARDS.md) is the standard these tools enforce.
 

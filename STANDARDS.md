@@ -182,7 +182,7 @@ These are the principles behind every rule below. When a rule is unclear, these 
 - **The local gate** is macOS plus `test_ubuntu.sh`, which builds each configuration fresh in the build image with
   warnings as errors: GCC and Clang, Release and Debug, and AddressSanitizer with UBSan.
 - **Test services** are Compose profiles in this repository, each with a smoke test in CI:
-  - the crypto test network: development Ethereum chains with a fixed genesis, Tron, and Bitcoin regtest;
+  - later, a crypto test network: development Ethereum chains with a fixed genesis, Tron, and Bitcoin regtest;
   - Postgres;
   - a catch-all mail server;
   - an SMS sink;
