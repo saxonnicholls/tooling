@@ -114,7 +114,7 @@ spaces and are not quoted. Flags are `yes` or `no`. A key appears once. Python, 
 | `detail_needs_test` | mirror | a `detail/` header has a test (default `yes`); never a demo |
 | `mirror_ignore` | mirror | directories under tests, demos and benchmarks that are not mirrored (default `cmake fixtures data`) |
 | `mirror_listed_only` | mirror | directories whose files need no header but must be listed (e.g. `support parity tutorials`) |
-| `mirror_listed_by` | mirror | `path` (default) or `stem`, for registrations such as `my_add_test(<sub>/<name>)` |
+| `mirror_listed_by` | mirror | `path` (default); `stem`, for registrations such as `my_add_test(<sub>/<name>)`; or `name`, for `my_add_test(<sub>/<name>_test)` |
 | `version_header` | version | default `<include_root>/version.hpp` |
 | `version_file.<label>` | version | `<path> <regex>`: one more copy of the version; the regex's groups, joined with `.` |
 | `interfaces_exempt` | interfaces | class names allowed pure virtual functions outside `interfaces/` |

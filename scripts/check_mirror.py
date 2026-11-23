@@ -28,7 +28,8 @@
 #                           support tutorials)
 #    mirror_listed_by       path (default): a file is listed when its path relative to the CMakeLists.txt appears in
 #                           it; stem: its path without _test.cpp / _demo.cpp is enough, for a registration function
-#                           called as my_add_test(<sub>/<name> ...)
+#                           called as my_add_test(<sub>/<name> ...); name: its path without .cpp, the suffix kept,
+#                           for my_add_test(<sub>/<name>_test ...)
 #
 #  Companion tests, <name>_<aspect>_test.cpp beside <name>_test.cpp, belong to <name>.hpp and must be listed.
 #  Exit status 0 when the tree mirrors, 1 when it does not, 2 on a configuration error.
@@ -95,8 +96,8 @@ def main():
         include_root = conf.include_root()
         detail_needs_test = conf.flag("detail_needs_test", True)
         by = conf.get("mirror_listed_by", "path")
-        if by not in ("path", "stem"):
-            raise tooling_conf.ConfigError("mirror_listed_by must be path or stem, not " + by)
+        if by not in ("path", "stem", "name"):
+            raise tooling_conf.ConfigError("mirror_listed_by must be path, stem or name, not " + by)
     except tooling_conf.ConfigError as e:
         print("%s: %s" % (TOOL, e), file=sys.stderr)
         return 2
@@ -116,7 +117,8 @@ def main():
     stems = {h[: -len(".hpp")] for h in stems if h != umbrella}
 
     def listed(tokens, rel, suffix):
-        return rel in tokens or (by == "stem" and rel[: -len(suffix)] in tokens)
+        return (rel in tokens or (by == "stem" and rel[: -len(suffix)] in tokens)
+                or (by == "name" and rel[: -len(".cpp")] in tokens))
 
     counts = {}
     for kind, suffix in KINDS:

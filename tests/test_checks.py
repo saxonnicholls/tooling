@@ -224,6 +224,17 @@ class MirrorTest(Fixture):
         self.conf("mirror_listed_by = stem")
         self.passes("mirror")
 
+    def test_listing_by_name_keeps_the_suffix(self):
+        self.write("demos/CMakeLists.txt", """\
+            my_add_demo(version_demo)
+            my_add_demo(widget_demo)
+            my_add_demo(concepts/greeter_demo)
+            my_add_demo(interfaces/greeter_demo)
+            """)
+        self.fails("mirror", "demos/version_demo.cpp exists but is not listed")
+        self.conf("mirror_listed_by = name")
+        self.passes("mirror")
+
 
 class VersionTest(Fixture):
     def test_the_fixture_agrees(self):
