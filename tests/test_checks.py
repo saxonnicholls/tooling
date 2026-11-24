@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.join(TOOLING, "scripts"))
 
 import tooling_conf  # noqa: E402
 import check_interfaces  # noqa: E402
+import check_pins  # noqa: E402
 
 INC = "include/snicholls/fixture"
 
@@ -386,6 +387,371 @@ class TwoVersionsCompileTest(Fixture):
         with open(header, "w", encoding="utf-8") as f:
             f.write(text.replace("#if defined(SNICHOLLS_FIXTURE_VERSION_MAJOR)", "#if 0 && defined(X)"))
         self.assertEqual(self.compile(a, b).returncode, 0)
+
+
+GIT_ENV = {"GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+           "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+           "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+
+@unittest.skipUnless(shutil.which("git"), "git is not installed")
+class PinsTest(unittest.TestCase):
+    """check_pins.py against trees of real git repositories: libraries with release tags, consumers that pin them,
+    and a top-level repository, checked out recursively. The remotes are local; a URL spelled as a host's
+    (https://github.com/example/core) is mapped to its local remote for git, never fetched."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.remotes = os.path.join(self.tmp, "remotes")
+        self.aliases = {}   # URL spelling -> local remote, for git's url.<base>.insteadOf
+        self.env = dict(os.environ, **GIT_ENV)
+        self.env.pop("RELEASE_TAG", None)
+        self.env.update({"GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "protocol.file.allow",
+                         "GIT_CONFIG_VALUE_0": "always", "GIT_CONFIG_KEY_1": "init.defaultBranch",
+                         "GIT_CONFIG_VALUE_1": "main"})
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def git(self, repo, *args):
+        p = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, env=self.env)
+        self.assertEqual(p.returncode, 0, "git %s: %s" % (" ".join(args), p.stderr))
+        return p.stdout.strip()
+
+    def alias(self, spelling, remote):
+        n = int(self.env["GIT_CONFIG_COUNT"])
+        self.env.update({"GIT_CONFIG_COUNT": str(n + 1), "GIT_CONFIG_KEY_%d" % n: "url.%s.insteadOf" % remote,
+                         "GIT_CONFIG_VALUE_%d" % n: spelling})
+
+    def write(self, repo, files):
+        for rel, text in files.items():
+            os.makedirs(os.path.dirname(os.path.join(repo, rel)) or repo, exist_ok=True)
+            with open(os.path.join(repo, rel), "w", encoding="utf-8") as f:
+                f.write(textwrap.dedent(text))
+
+    def repo(self, name, files=None):
+        path = os.path.join(self.remotes, name)
+        os.makedirs(path)
+        self.git(path, "init", "-q")
+        self.write(path, files or {"README": name + "\n"})
+        return path
+
+    def commit(self, repo, message, tag=None):
+        self.git(repo, "add", "-A")
+        self.git(repo, "commit", "-q", "--allow-empty", "-m", message)
+        if tag:
+            self.git(repo, "tag", "-a", "-m", tag, tag)
+        return self.git(repo, "rev-parse", "HEAD")
+
+    def library(self, name, tags=("v0.1.0", "v0.2.0"), files=None, untagged=False):
+        """A library with one commit per release tag (and one untagged commit after them)."""
+        path = self.repo(name, files)
+        shas = {}
+        for tag in tags:
+            self.write(path, {"VERSION": tag + "\n"})
+            shas[tag] = self.commit(path, tag, tag)
+        if untagged:
+            self.write(path, {"VERSION": "next\n"})
+            shas["untagged"] = self.commit(path, "after the release")
+        return shas
+
+    def pin(self, repo, path, name, ref, url=None):
+        self.git(repo, "submodule", "add", "-q", os.path.join(self.remotes, name), path)
+        self.git(os.path.join(repo, path), "checkout", "-q", ref)
+        if url:
+            self.alias(url, os.path.join(self.remotes, name))
+            self.git(repo, "config", "-f", ".gitmodules", "submodule.%s.url" % path, url)
+        self.git(repo, "add", "-A")
+
+    def consumer(self, name, pins, tag="v0.1.0", files=None):
+        """A library that pins others: pins is [(path, library, ref[, url])]."""
+        path = self.repo(name, files)
+        for p in pins:
+            self.pin(path, *p)
+        return self.commit(path, "pins", tag)
+
+    def top(self, pins, files=None, conf=""):
+        top = os.path.join(self.tmp, "top")
+        os.makedirs(top)
+        self.git(top, "init", "-q")
+        self.write(top, {"tooling.conf": "include_root = include/snicholls/top\nmacro_prefix = TOP_\n" + conf})
+        self.write(top, files or {})
+        for p in pins:
+            self.pin(top, *p)
+        self.commit(top, "the top-level project")
+        self.git(top, "submodule", "update", "-q", "--init", "--recursive")
+        return top
+
+    def run_pins(self, *args, root=None, env=None):
+        p = subprocess.run([sys.executable, os.path.join(TOOLING, "scripts", "check_pins.py"),
+                            "--root", root or os.path.join(self.tmp, "top"), *args],
+                           capture_output=True, text=True, env=dict(self.env, **(env or {})))
+        return p.returncode, " ".join((p.stdout + p.stderr).split())
+
+    def passes(self, *args, **kw):
+        code, out = self.run_pins(*args, **kw)
+        self.assertEqual(code, 0, out)
+        return out
+
+    def fails(self, message, *args, code=1, **kw):
+        got, out = self.run_pins(*args, **kw)
+        self.assertEqual(got, code, out)
+        self.assertIn(message, out)
+        return out
+
+    def stale_mid(self):
+        """The top pins core v0.2.0 and mid, which pins core v0.1.0: a shadowed copy at another version."""
+        self.library("core")
+        self.consumer("mid", [("third_party/core", "core", "v0.1.0")])
+        return self.top([("third_party/core", "core", "v0.2.0"), ("third_party/mid", "mid", "v0.1.0")])
+
+    # The walk and the tags
+
+    def test_a_repository_without_submodules_passes(self):
+        self.top([])
+        self.assertIn("ok - 0 libraries", self.passes("--release"))
+
+    def test_a_tagged_pin_is_built(self):
+        self.library("core")
+        self.top([("third_party/core", "core", "v0.2.0")])
+        out = self.passes()
+        self.assertIn("third_party/core v0.2.0 built", out)
+        self.assertIn("ok - 1 library, one version of each in the build", out)
+
+    def test_a_built_pin_that_is_not_a_release_tag_fails(self):
+        shas = self.library("core", untagged=True)
+        self.top([("third_party/core", "core", shas["untagged"])])
+        self.fails("core: third_party/core is pinned at %s, which is not a release tag" % shas["untagged"][:9])
+
+    def test_an_untagged_library_can_be_allowed_by_name_or_url(self):
+        shas = self.library("core", untagged=True)
+        top = self.top([("third_party/core", "core", shas["untagged"])], conf="pins_allow_untagged = core  # no releases\n")
+        self.passes()
+        self.write(top, {"tooling.conf": "pins_allow_untagged.core = %s  # no releases\n" % os.path.join(self.remotes, "core.git")})
+        self.passes()
+
+    def test_the_tag_comes_from_the_remote_when_the_checkout_lacks_it(self):
+        self.library("core")
+        top = self.top([("third_party/core", "core", "v0.2.0")])
+        self.git(os.path.join(top, "third_party/core"), "tag", "-d", "v0.1.0", "v0.2.0")
+        self.assertIn("third_party/core v0.2.0 built", self.passes())
+        # offline, a full clone without the tag is taken at its word
+        self.fails("is not a release tag", "--offline")
+
+    def test_a_shallow_checkout_without_tags_offline_is_a_warning(self):
+        self.library("core")
+        top = self.top([("third_party/core", "core", "v0.2.0")])
+        sub = os.path.join(top, "third_party", "core")
+        shutil.rmtree(sub)
+        self.git(top, "clone", "-q", "--depth", "1", "--no-tags", "file://" + os.path.join(self.remotes, "core"), sub)
+        out = self.passes("--offline")
+        self.assertIn("cannot tell whether third_party/core's pin", out)
+        self.fails("cannot tell whether", "--offline", "--release")
+
+    # One version
+
+    def test_a_shadowed_copy_at_another_version_is_a_warning(self):
+        self.stale_mid()
+        out = self.passes()
+        self.assertIn("third_party/mid/third_party/core v0.1.0 shadowed", out)
+        self.assertIn("warning: core: third_party/mid/third_party/core is pinned at v0.1.0 but shadowed by "
+                      "third_party/core at v0.2.0", out)
+        self.assertIn("1 warning", out)
+
+    def test_on_a_release_the_shadowed_copy_fails(self):
+        self.stale_mid()
+        self.fails("third_party/mid/third_party/core is pinned at v0.1.0 but shadowed", "--release")
+        self.fails("(a release: warnings are errors)", env={"RELEASE_TAG": "v1.0.0"})
+
+    def test_a_shadowed_copy_at_the_same_version_is_silent(self):
+        self.library("core")
+        self.consumer("mid", [("third_party/core", "core", "v0.2.0")])
+        self.top([("third_party/core", "core", "v0.2.0"), ("third_party/mid", "mid", "v0.1.0")])
+        out = self.passes("--release")
+        self.assertNotIn("warning", out)
+
+    def test_a_library_is_known_by_its_url_not_its_folder(self):
+        self.assertEqual(check_pins.normalise("git@github.com:Example/TS-Moveables.git"),
+                         "github.com/example/ts-moveables")
+        for spelling in ("https://github.com/example/ts-moveables", "https://GitHub.com/example/ts-moveables.git/",
+                         "ssh://git@github.com:22/example/ts-moveables.git", "http://user@github.com/example/ts-moveables"):
+            self.assertEqual(check_pins.normalise(spelling), "github.com/example/ts-moveables", spelling)
+        self.assertEqual(check_pins.resolve_url("../core.git", "github.com/example/mid"), "github.com/example/core")
+        self.library("ts-moveables")
+        self.consumer("mid", [("third_party/ts_moveables", "ts-moveables", "v0.1.0",
+                               "git@github.com:Example/TS-Moveables.git")])
+        self.top([("third_party/ts-moveables", "ts-moveables", "v0.2.0", "https://github.com/example/ts-moveables"),
+                  ("third_party/mid", "mid", "v0.1.0")])
+        out = self.passes()
+        self.assertIn("ts-moveables: third_party/mid/third_party/ts_moveables is pinned at v0.1.0 but shadowed by "
+                      "third_party/ts-moveables at v0.2.0", out)
+
+    def test_two_copies_at_one_depth_and_none_shallower_fail_when_they_differ(self):
+        self.library("core")
+        self.consumer("left", [("third_party/core", "core", "v0.1.0")])
+        self.consumer("right", [("third_party/core", "core", "v0.2.0")])
+        self.top([("third_party/left", "left", "v0.1.0"), ("third_party/right", "right", "v0.1.0")])
+        self.fails("core: 2 copies at depth 2 and none shallower, at different commits "
+                   "(third_party/left/third_party/core v0.1.0, third_party/right/third_party/core v0.2.0): "
+                   "whichever is added first wins")
+
+    def test_two_copies_at_one_depth_at_the_same_version_pass(self):
+        self.library("core")
+        self.consumer("left", [("third_party/core", "core", "v0.2.0")])
+        self.consumer("right", [("third_party/core", "core", "v0.2.0")])
+        self.top([("third_party/left", "left", "v0.1.0"), ("third_party/right", "right", "v0.1.0")])
+        self.passes("--release")
+
+    def test_a_consumer_requiring_more_than_the_built_copy_fails(self):
+        self.library("core", files={"CMakeLists.txt": "project(snicholls_core VERSION 0.0.0)\n"})
+        self.consumer("mid", [("third_party/core", "core", "v0.2.0")], files={
+            "CMakeLists.txt": "snicholls_require(snicholls_core 0.2.0)  # what mid uses\n",
+            "tests/cmake/diamond.cmake": "snicholls_require(snicholls_core 99.0.0)  # a fixture: never counted\n"})
+        self.top([("third_party/core", "core", "v0.1.0"), ("third_party/mid", "mid", "v0.1.0")])
+        out = self.fails("core: third_party/mid needs 0.2.0 or newer (third_party/mid/CMakeLists.txt), but the "
+                         "built copy, third_party/core, is v0.1.0: configure would fail")
+        self.assertNotIn("99.0.0", out)
+
+    def test_core_style_requirements_and_satisfied_ones(self):
+        self.library("core", files={"CMakeLists.txt": "project(snicholls_core VERSION 0.0.0)\n"})
+        self.consumer("mid", [("third_party/core", "core", "v0.2.0")],
+                      files={"CMakeLists.txt": "snicholls_core_require(0.2.0)\n"})
+        self.top([("third_party/core", "core", "v0.2.0"), ("third_party/mid", "mid", "v0.1.0")],
+                 files={"CMakeLists.txt": "snicholls_require(snicholls_core 0.1.0)\n"})
+        self.passes()
+        self.git(os.path.join(self.tmp, "top", "third_party", "core"), "checkout", "-q", "v0.1.0")
+        self.git(os.path.join(self.tmp, "top"), "commit", "-q", "-am", "core v0.1.0")
+        self.fails("core: third_party/mid needs 0.2.0 or newer")
+
+    def test_an_untagged_built_copy_skips_the_requirement_and_says_so(self):
+        shas = self.library("core", untagged=True, files={"CMakeLists.txt": "project(snicholls_core VERSION 0.0.0)\n"})
+        self.top([("third_party/core", "core", shas["untagged"])],
+                 files={"CMakeLists.txt": "snicholls_require(snicholls_core 0.1.0)\n"},
+                 conf="pins_allow_untagged = core\n")
+        self.assertIn("note: this repository needs snicholls_core 0.1.0 (CMakeLists.txt): not checked", self.passes())
+
+    # Exemptions and the edges
+
+    def test_an_ignored_path_or_url_is_neither_checked_nor_walked(self):
+        self.stale_mid()
+        top = os.path.join(self.tmp, "top")
+        with open(os.path.join(top, "tooling.conf"), "a", encoding="utf-8") as f:
+            f.write("pins_ignore = third_party/mid/third_party/core  # mid's own tests' copy\n")
+        self.assertNotIn("warning", self.passes())
+        self.write(top, {"tooling.conf": "pins_ignore = %s  # not ours\n" % os.path.join(self.remotes, "mid")})
+        out = self.passes("--release")
+        self.assertNotIn("third_party/mid", out)
+
+    def test_an_ignore_entry_that_matches_nothing_is_a_warning(self):
+        self.library("core")
+        self.top([("third_party/core", "core", "v0.2.0")], conf="pins_ignore = third_party/gone\n")
+        self.assertIn("warning: pins_ignore: third_party/gone matches no submodule", self.passes())
+
+    def test_a_checkout_away_from_its_pin_is_a_warning(self):
+        self.library("core")
+        top = self.top([("third_party/core", "core", "v0.2.0")])
+        self.git(os.path.join(top, "third_party", "core"), "checkout", "-q", "v0.1.0")
+        self.assertIn("third_party/core is checked out at", self.passes())
+
+    def test_a_gitlink_without_a_gitmodules_entry_fails(self):
+        shas = self.library("core")
+        top = self.top([])
+        self.git(top, "update-index", "--add", "--cacheinfo", "160000,%s,third_party/raw" % shas["v0.1.0"])
+        self.git(top, "commit", "-q", "-m", "a bare gitlink")
+        self.fails("third_party/raw is a submodule with no .gitmodules entry")
+
+    def test_a_copy_of_the_repository_itself_is_a_cycle(self):
+        self.library("app", tags=("v0.1.0",))
+        self.consumer("mid", [("third_party/app", "app", "v0.1.0")])
+        top = os.path.join(self.tmp, "top")
+        self.git(self.tmp, "clone", "-q", os.path.join(self.remotes, "app"), top)
+        self.write(top, {"tooling.conf": "include_root = include/snicholls/app\n"})
+        self.pin(top, "third_party/mid", "mid", "v0.1.0")
+        self.commit(top, "pins mid")
+        self.git(top, "submodule", "update", "-q", "--init", "--recursive")
+        self.fails("app: third_party/mid/third_party/app is a copy of this repository, which pins it: the pins form a cycle")
+
+    def test_outside_a_git_work_tree_it_is_skipped(self):
+        root = os.path.join(self.tmp, "snapshot")
+        shutil.copytree(GOOD, root)
+        code, out = self.run_pins(root=root)
+        self.assertEqual(code, 77, out)
+        self.assertIn("skipped", out)
+
+    def test_no_config_is_a_configuration_error(self):
+        os.makedirs(os.path.join(self.tmp, "top"))
+        self.fails("no ", code=2)
+
+    def test_a_gitmodules_entry_without_a_url_is_a_configuration_error(self):
+        self.library("core")
+        top = self.top([("third_party/core", "core", "v0.2.0")])
+        self.git(top, "config", "-f", ".gitmodules", "--unset", "submodule.third_party/core.url")
+        self.git(top, "commit", "-q", "-am", "no url")
+        self.fails("has no url", code=2)
+
+    # Every library it uses, the repository pins itself
+
+    def core_and_mid(self, direct_core):
+        self.library("core", files={"include/snicholls/core/core.hpp": "// core\n"})
+        self.consumer("mid", [("third_party/core", "core", "v0.2.0")],
+                      files={"include/snicholls/mid/mid.hpp": "#include <snicholls/core/core.hpp>\n"})
+        pins = [("third_party/mid", "mid", "v0.1.0")]
+        if direct_core:
+            pins.insert(0, ("third_party/core", "core", "v0.2.0"))
+        return pins
+
+    def test_an_include_through_another_librarys_pin_fails(self):
+        self.top(self.core_and_mid(False), files={
+            "include/snicholls/top/top.hpp": "#include <snicholls/top/other.hpp>\n#include <snicholls/mid/mid.hpp>\n",
+            "tests/top_test.cpp": '#include "snicholls/core/core.hpp"\n'})
+        self.fails("tests/top_test.cpp:1: #include <snicholls/core/...> needs a direct pin of the library that "
+                   "provides snicholls/core, and it is reached only through third_party/mid/third_party/core")
+
+    def test_an_include_of_a_direct_pin_or_its_own_root_passes(self):
+        self.top(self.core_and_mid(True), files={
+            "include/snicholls/top/top.hpp": "#include <snicholls/top/other.hpp>\n#include <snicholls/core/core.hpp>\n"
+                                             "#include <snicholls/mid/mid.hpp>\n"})
+        self.passes()
+
+    def test_an_include_no_pin_provides_fails_unless_exempt(self):
+        self.top(self.core_and_mid(True), files={"src/a.cpp": "#include <snicholls/elsewhere/x.hpp>\n"})
+        self.fails("src/a.cpp:1: #include <snicholls/elsewhere/...> needs a direct pin of the library that provides "
+                   "snicholls/elsewhere, and no pin provides it")
+        with open(os.path.join(self.tmp, "top", "tooling.conf"), "a", encoding="utf-8") as f:
+            f.write("pins_reach_exempt = snicholls/elsewhere  # a system library, on purpose\n")
+        self.passes()
+
+    def test_a_build_file_reaching_into_another_third_party_fails(self):
+        self.top(self.core_and_mid(False), files={
+            "CMakeLists.txt": "# add_subdirectory(third_party/mid/third_party/core) in a comment is fine\n"
+                              "add_subdirectory(third_party/mid)\n"
+                              "target_include_directories(x PRIVATE\n    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mid/third_party/core/include)\n",
+            "Makefile": "CXXFLAGS += -Ithird_party/mid/third_party/core/include\n"})
+        out = self.fails("CMakeLists.txt:3: target_include_directories ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mid/"
+                         "third_party/core/include reaches into another library's third_party/")
+        self.assertIn("Makefile:1: -I third_party/mid/third_party/core/include reaches into", out)
+        self.assertNotIn("CMakeLists.txt:1", out)
+
+    def test_a_build_file_reaching_out_of_the_repository_fails(self):
+        self.top([], files={
+            "CMakeLists.txt": "add_subdirectory(../core core)\ninclude(${CMAKE_SOURCE_DIR}/cmake/x.cmake)\n",
+            "tests/CMakeLists.txt": "include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../include)\n",
+            "make/rules.mk": "include ../../sibling/rules.mk\n",
+            "third_party/vendored/CMakeLists.txt": "add_subdirectory(../../../outside)\n"})
+        out = self.fails("CMakeLists.txt:1: add_subdirectory ../core reaches out of the repository")
+        self.assertIn("make/rules.mk:1: include ../../sibling/rules.mk reaches out of the repository", out)
+        self.assertNotIn("tests/CMakeLists.txt", out)
+        self.assertNotIn("vendored", out)
+
+    def test_a_build_file_can_be_exempt(self):
+        self.top([], files={"CMakeLists.txt": "add_subdirectory(../core core)\n"},
+                 conf="pins_reach_exempt = CMakeLists.txt  # the monorepo's own layout\n")
+        self.passes()
+
+    def test_the_good_fixture_complies(self):
+        root = os.path.join(self.tmp, "fixture")
+        subprocess.run([os.path.join(TOOLING, "tests", "fixture_repo.sh"), root], check=True, env=self.env)
+        self.passes("--release", root=root)
 
 
 class InterfacesTest(Fixture):

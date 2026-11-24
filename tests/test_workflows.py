@@ -94,6 +94,11 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn("needs: [plan, checks, linux, macos]", jobs["single-include"])
         self.assertIn("gh release upload", jobs["single-include"])
         self.assertIn("single_include.py\" --check", jobs["checks"])
+        # one version of each library: the pins, with their tags (a full clone), strict on a release tag
+        self.assertIn("check_pins.py\"", jobs["checks"])
+        self.assertIn("fetch-depth: 0", jobs["checks"])
+        pins_step = jobs["checks"].split("- name: One version of each library")[1]
+        self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v')", pins_step)
 
     def test_tooling_calls_it_on_the_fixture(self):
         tools = blocks(self.files["tools.yml"], "jobs", 2)

@@ -7,7 +7,8 @@
 #  The CI of a library, reusable (README "The library workflow"). A repository's ci.yml calls it at the tooling tag
 #  its submodule pins, and its tooling.conf says the rest:
 #
-#    - the checks: check_version.py (against the tag, on a tag push), check_mirror.py, check_interfaces.py;
+#    - the checks: check_version.py (against the tag, on a tag push), check_mirror.py, check_interfaces.py, the
+#      single include, check_pins.py (warnings are errors on a tag push);
 #    - Linux x86-64 and ARM64: each of the gate's configurations (scripts/test_ubuntu.sh --only <config>) in its
 #      own job, in tooling's images or the repository's derived ones: GCC and Clang, Release with the benchmark smoke
 #      runs and the documentation, Debug, ASan+UBSan;
@@ -123,7 +124,7 @@ jobs:
           } | tee -a "$GITHUB_OUTPUT"
 
   checks:
-    name: Checks (version, mirror, interfaces, single include)
+    name: Checks (version, mirror, interfaces, single include, pins)
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -131,9 +132,11 @@ jobs:
       run:
         working-directory: ${{ inputs.path }}
     steps:
+      # The whole history: a full clone of every submodule carries its tags, which check_pins.py names the pins by
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           submodules: recursive
+          fetch-depth: 0
           persist-credentials: false
       - name: Prepare
         if: inputs.prepare != ''
@@ -149,6 +152,10 @@ jobs:
         run: python3 "$TOOLING/scripts/check_interfaces.py"
       - name: The single include holds every public header
         run: python3 "$TOOLING/scripts/single_include.py" --check
+      - name: One version of each library, each pinned where it is used (a release tag allows no warning)
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        run: python3 "$TOOLING/scripts/check_pins.py"
 
   linux:
     name: Linux ${{ matrix.runner == 'ubuntu-24.04-arm' && 'ARM64' || 'x86-64' }} ${{ matrix.configuration }}

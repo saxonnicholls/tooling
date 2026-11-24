@@ -13,7 +13,8 @@
 #      make test-werror     the same with <option_prefix>WERROR=ON, as CI does
 #      make asan            AddressSanitizer and UBSan, warnings as errors
 #      make docs            the documentation (tooling.conf docs = yes), in build-docs
-#      make check           check_version.py, check_mirror.py, check_interfaces.py, single_include.py --check
+#      make check           check_version.py, check_mirror.py, check_interfaces.py, single_include.py --check,
+#                           check_pins.py
 #      make single-include  write single_include/<name>.hpp (git-ignored; CI attaches it to every release)
 #      make ubuntu          the Ubuntu gate in Docker (scripts/test_ubuntu.sh; UBUNTU="--quick" for its arguments)
 #      make demos           build and run every demo with its output shown (CTest label demo), or make.demos
@@ -81,6 +82,7 @@ check:
 	$(PYTHON) $(TOOLING_DIR)/scripts/check_mirror.py --root $(TOOLING_REPO)
 	$(PYTHON) $(TOOLING_DIR)/scripts/check_interfaces.py --root $(TOOLING_REPO)
 	$(PYTHON) $(TOOLING_DIR)/scripts/single_include.py --root $(TOOLING_REPO) --check
+	$(PYTHON) $(TOOLING_DIR)/scripts/check_pins.py --root $(TOOLING_REPO)
 
 single-include:
 	$(PYTHON) $(TOOLING_DIR)/scripts/single_include.py --root $(TOOLING_REPO)

@@ -11,7 +11,8 @@
 #      # every public header compiles on its own, twice, behind its named guard
 #      snicholls_header_check(my_lib_header_check LINK my::lib)
 #
-#      # check_mirror.py, check_version.py, check_interfaces.py and single_include.py --check as CTests (label boundary)
+#      # check_mirror.py, check_version.py, check_interfaces.py, check_pins.py and single_include.py --check as
+#      # CTests (label boundary)
 #      snicholls_tooling_add_checks()
 #
 #      # the single include, generated in the build tree, compiles on its own with nothing but the standard library
@@ -35,10 +36,11 @@
 #  changes) and defines an OBJECT library <target> with one translation unit per file, which includes it with no
 #  other include directory: it proves the file self-contained. single_include.py --check proves it complete.
 #
-#  snicholls_tooling_add_checks([MIRROR] [VERSION] [INTERFACES] [SINGLE_INCLUDE] [LABELS <label>...]
+#  snicholls_tooling_add_checks([MIRROR] [VERSION] [INTERFACES] [PINS] [SINGLE_INCLUDE] [LABELS <label>...]
 #                               [CONFIG <tooling.conf>])
-#  adds the named checks (default all four) as CTests check.mirror, check.version, check.interfaces and
-#  check.single_include.
+#  adds the named checks (default all five) as CTests check.mirror, check.version, check.interfaces, check.pins
+#  and check.single_include. check.pins is reported skipped where the sources are in no git work tree (the gate's
+#  snapshot), since there are no pins to read there.
 #
 #  One version of each library: snicholls_library_begin(), snicholls_require() and snicholls_assert_single_versions(),
 #  from SnichollsOneVersion.cmake, included here.
@@ -146,7 +148,7 @@ function(snicholls_header_check target)
 endfunction()
 
 function(snicholls_tooling_add_checks)
-    cmake_parse_arguments(PARSE_ARGV 0 arg "MIRROR;VERSION;INTERFACES;SINGLE_INCLUDE" "CONFIG" "LABELS")
+    cmake_parse_arguments(PARSE_ARGV 0 arg "MIRROR;VERSION;INTERFACES;PINS;SINGLE_INCLUDE" "CONFIG" "LABELS")
     if(NOT arg_CONFIG)
         set(arg_CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/tooling.conf")
     endif()
@@ -154,13 +156,13 @@ function(snicholls_tooling_add_checks)
         set(arg_LABELS boundary)
     endif()
     set(_checks)
-    foreach(_check IN ITEMS MIRROR VERSION INTERFACES SINGLE_INCLUDE)
+    foreach(_check IN ITEMS MIRROR VERSION INTERFACES PINS SINGLE_INCLUDE)
         if(arg_${_check})
             list(APPEND _checks ${_check})
         endif()
     endforeach()
     if(NOT _checks)
-        set(_checks MIRROR VERSION INTERFACES SINGLE_INCLUDE)
+        set(_checks MIRROR VERSION INTERFACES PINS SINGLE_INCLUDE)
     endif()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     get_filename_component(_repo "${arg_CONFIG}" DIRECTORY)
@@ -177,6 +179,9 @@ function(snicholls_tooling_add_checks)
                  COMMAND Python3::Interpreter "${SNICHOLLS_TOOLING_DIR}/scripts/${_script}"
                          --root "${_repo}" --config "${arg_CONFIG}" ${_extra})
         set_tests_properties(check.${_name} PROPERTIES LABELS "${arg_LABELS}")
+        if(_name STREQUAL "pins")
+            set_tests_properties(check.pins PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
     endforeach()
 endfunction()
 

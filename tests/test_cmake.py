@@ -62,7 +62,9 @@ class HeaderCheckTest(Fixture):
         p = subprocess.run(["ctest", "--test-dir", self.build, "-R", "^check\\.", "-L", "boundary"],
                            capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertRegex(p.stdout, r"100% tests passed(, 0 tests failed)? out of 4")
+        self.assertRegex(p.stdout, r"100% tests passed(, 0 tests failed)? out of 5")
+        # the copy is in no git work tree, as in the gate's snapshot: no pins to read, so check.pins is skipped
+        self.assertRegex(p.stdout, r"check\.pins \.+\**Skipped")
 
     def test_a_check_ctest_fails_when_its_rule_does(self):
         self.remove("tests/version_test.cpp")

@@ -64,13 +64,14 @@ class MakeTest(unittest.TestCase):
 
     # What each target runs
 
-    def test_check_runs_the_four_checks(self):
+    def test_check_runs_the_five_checks(self):
         lines = self.dry("check")
-        for check in ("version", "mirror", "interfaces"):
+        for check in ("version", "mirror", "interfaces", "pins"):
             self.assertIn("check_%s.py" % check, " ".join(lines))
         self.assertIn("single_include.py --root", lines[3])
         self.assertTrue(lines[3].endswith("--check"), lines[3])
-        self.assertEqual(len(lines), 4)
+        self.assertIn("check_pins.py --root", lines[4])
+        self.assertEqual(len(lines), 5)
 
     def test_test_checks_then_configures_builds_and_runs_every_ctest(self):
         lines = self.dry("test")
