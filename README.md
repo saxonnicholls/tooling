@@ -8,8 +8,11 @@ It provides:
   `ghcr.io/saxonnicholls/<image>`, and a repository's own images derived from them;
 - the local Ubuntu gate, `scripts/test_ubuntu.sh`, and the standard make targets, `make/tooling.mk`;
 - the repository checks: `scripts/check_mirror.py` (tests and demos mirror the headers), `scripts/check_version.py`
-  (versions agree), `scripts/check_interfaces.py` (interfaces have both forms), and `cmake/SnichollsTooling.cmake`
-  (every header compiles on its own, behind its named guard);
+  (versions agree), `scripts/check_interfaces.py` (interfaces have both forms), `scripts/check_pins.py` (one version
+  of each library, each pinned where it is used), and `cmake/SnichollsTooling.cmake` (every header compiles on its
+  own, behind its named guard);
+- one version of each library in a build, at configure (`cmake/SnichollsOneVersion.cmake`), compile (the version
+  header's two-versions check) and link time (the workflow's `odr` job);
 - the reusable library workflow, `.github/workflows/library.yml`: a library's whole CI, documentation published to
   GitHub Pages included;
 - Docker test services (planned): Postgres, mail and SMS sinks, and later a local crypto test network.
@@ -30,14 +33,34 @@ Licence: MIT ([LICENSE](LICENSE)).
 
 2. Copy [`templates/tooling.conf`](templates/tooling.conf) to the repository's root and fill it in.
 
-3. In the top-level `CMakeLists.txt`, where the tests are configured:
+3. Pin every library the repository uses directly, ours or third-party, as a submodule in its own `third_party/`,
+   at a release tag, even when another dependency already pins it. Never reach one through another library's
+   `third_party/`, a sibling checkout (`../<repo>`) or a system install: `check_pins.py` fails on it
+   ([One version of each library](#one-version-of-each-library)).
+
+4. In the top-level `CMakeLists.txt`:
 
    ```cmake
+   project(my_lib VERSION 1.2.3 LANGUAGES CXX)
    include(third_party/tooling/cmake/SnichollsTooling.cmake)
+   snicholls_library_begin(my_lib ${PROJECT_VERSION} my::lib)  # a second copy of my_lib in a build stops here
+   # ... add_library(my_lib ...), add_library(my::lib ALIAS my_lib), the pins' add_subdirectory and
+   #     snicholls_require calls
+
+   # where the tests are configured:
    snicholls_header_check(my_lib_header_check LINK my::lib)   # then apply your warning options to it
    snicholls_single_include_check(my_lib_single_include)      # generated in the build tree, compiled alone
-   snicholls_tooling_add_checks()   # CTests check.mirror, check.version, check.interfaces, check.single_include
+   snicholls_tooling_add_checks()   # CTests check.mirror, check.version, check.interfaces, check.pins,
+                                    # check.single_include
+
+   # the last line:
+   if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+       snicholls_assert_single_versions()
+   endif()
    ```
+
+   The version header starts with the two-versions check, before its guard
+   ([templates/version.hpp](templates/version.hpp), [The version header](#the-version-header)).
 
    The single include needs a `single_include.<name>` line in `tooling.conf`. It is never committed: add
    `/single_include/*.hpp` to `.gitignore` and a `single_include/README.md` saying where to download it (the
@@ -46,14 +69,14 @@ Licence: MIT ([LICENSE](LICENSE)).
    The CMake options the tools set are `<option_prefix>WERROR`, `SANITIZE` (e.g. `address,undefined`),
    `BUILD_DOCS` (a `docs` target), `BUILD_BENCHMARKS` and, if the repository has it, `BUILD_TESTS`.
 
-4. The `Makefile` is one line, plus any targets of the repository's own
+5. The `Makefile` is one line, plus any targets of the repository's own
    ([make/tooling.mk](#the-make-targets-maketoolingmk)):
 
    ```make
    include third_party/tooling/make/tooling.mk
    ```
 
-5. `.github/workflows/ci.yml` calls the library workflow at the tag the submodule pins
+6. `.github/workflows/ci.yml` calls the library workflow at the tag the submodule pins
    ([The library workflow](#the-library-workflow-githubworkflowslibraryyml)):
 
    ```yaml
@@ -75,7 +98,7 @@ Licence: MIT ([LICENSE](LICENSE)).
          pages: true
    ```
 
-6. If the builds need a library the standard images lack, a Dockerfile `FROM` the standard image and one line of
+7. If the builds need a library the standard images lack, a Dockerfile `FROM` the standard image and one line of
    `tooling.conf` ([Derived images](#derived-images)):
 
        image = docker/ci/Dockerfile
@@ -118,6 +141,9 @@ spaces and are not quoted. Flags are `yes` or `no`. A key appears once. Python, 
 | `version_header` | version | default `<include_root>/version.hpp` |
 | `version_file.<label>` | version | `<path> <regex>`: one more copy of the version; the regex's groups, joined with `.` |
 | `interfaces_exempt` | interfaces | class names allowed pure virtual functions outside `interfaces/` |
+| `pins_ignore`, `pins_ignore.<label>` | pins | submodules, by URL or by path from the root, neither checked nor walked; say why beside each |
+| `pins_allow_untagged`, `pins_allow_untagged.<label>` | pins | libraries, by URL or by name (the URL's last part), whose pins may be commits: a third party with no releases; one version is still enforced |
+| `pins_reach_exempt`, `pins_reach_exempt.<label>` | pins | files (from the root) or include roots (`snicholls/x`) exempt from the rule that every library is reached through a direct pin |
 | `single_include.<name>` | single include | the umbrella header as it is included (`snicholls/core/core.hpp`), flattened into `<name>.hpp`; at least one (required) |
 | `single_include_dir` | single include | where `make single-include` writes, default `single_include` (git-ignored but for its README) |
 | `single_include_inline` | single include | the include directories whose headers are expanded (default `include_dir`); add each pinned library's, e.g. `include third_party/core/include` |
@@ -194,7 +220,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends pocl-opencl-icd
 | `make test-werror` | the same in `build-werror` with `<prefix>WERROR=ON`: the Mac half of the local gate |
 | `make asan` | `build-asan`, RelWithDebInfo, `<prefix>SANITIZE=address,undefined`, warnings as errors; UBSan halts on its first report |
 | `make docs` | `build-docs` with `<prefix>BUILD_DOCS=ON` (and `BUILD_TESTS=OFF`), target `docs`; an error if `docs = no` |
-| `make check` | `check_version.py`, `check_mirror.py`, `check_interfaces.py` |
+| `make check` | `check_version.py`, `check_mirror.py`, `check_interfaces.py`, `single_include.py --check`, `check_pins.py` |
 | `make ubuntu` | `scripts/test_ubuntu.sh`, the Ubuntu half of the gate; `UBUNTU="--quick"` passes its arguments |
 | `make demos` | build in `build` and run the CTests labelled `demo` with their output; or `make.demos` |
 | `make benchmarks` | `build-bench`, Release, `<prefix>BUILD_BENCHMARKS=ON`, the CTests labelled `benchmark`; or `make.benchmarks`; an error if `benchmarks = no` |
@@ -213,7 +239,7 @@ A reusable workflow (`on: workflow_call`) that is a library's whole CI. Every le
 | Job | Runner | What it runs |
 |---|---|---|
 | `plan` | Ubuntu | reads `tooling.conf`: the configurations (`test_ubuntu.sh --list`), the option prefix, `docs`, `benchmarks`, `cmake`, `env` |
-| `checks` | Ubuntu | `check_version.py` (against the tag, on a tag push), `check_mirror.py`, `check_interfaces.py` |
+| `checks` | Ubuntu | `check_version.py` (against the tag, on a tag push), `check_mirror.py`, `check_interfaces.py`, `single_include.py --check`, `check_pins.py` (on a tag push every warning is an error); the submodules are full clones, so their tags are there |
 | `linux` | x86-64 and ARM64 | each configuration of the gate in a job of its own, `test_ubuntu.sh --only <config>`, in its image (derived ones included), 4 jobs on x86-64 and 3 on ARM64 |
 | `macos` | ARM64 and x86-64 | Apple Clang: Release with `<prefix>WERROR=ON` and the benchmark smoke runs, then Debug at `-O0` with asserts live |
 | `windows` | Windows | MSVC Release with `<prefix>WERROR=ON` and the benchmark smoke runs; `continue-on-error` unless `msvc_continue_on_error: false` |
@@ -252,6 +278,7 @@ them as CTests with the label `boundary`.
     python3 third_party/tooling/scripts/check_mirror.py
     python3 third_party/tooling/scripts/check_version.py [--tag vX.Y.Z]   # or RELEASE_TAG in the environment
     python3 third_party/tooling/scripts/check_interfaces.py
+    python3 third_party/tooling/scripts/check_pins.py [--release] [--offline]   # --release: or RELEASE_TAG
     python3 third_party/tooling/scripts/single_include.py [--check]
 
 - **`check_mirror.py`** (STANDARDS section 4):
@@ -260,7 +287,11 @@ them as CTests with the label `boundary`.
   - no test, demo or benchmark is without a header or unlisted;
   - companion tests (`<name>_<aspect>_test.cpp`) belong to `<name>.hpp` and must be listed.
 - **`check_version.py`** (section 2): the version header, `project(... VERSION)`, every `version_file.<label>` and
-  the tag agree.
+  the tag agree, and the version header starts with its two-versions check, whose literals (and the version in its
+  `#error` text) are one more copy of the number ([The version header](#the-version-header)).
+- **`check_pins.py`** (section 2): one version of each library, each pinned where it is used
+  ([One version of each library](#one-version-of-each-library)). It also exits 77 when the root is in no git work
+  tree, as in the gate's snapshot, and the CTest `check.pins` reports that as skipped.
 - **`check_interfaces.py`** (section 3), under `include_root`, at any depth:
   - `interfaces/<x>.hpp` with a pure virtual class has `concepts/<x>.hpp`, and the reverse;
   - both are in `namespace`;
@@ -275,6 +306,155 @@ them as CTests with the label `boundary`.
   found in `single_include_inline` are expanded where they are first included unconditionally, once each, by real
   path; a header first reached inside an `#if` is written there too, and again at its next unconditional include,
   so that no platform loses it (its guard compiles it once). Every other include is kept as written.
+
+## One version of each library
+
+A build has one version of each library (STANDARDS section 2). A repository reaches a library through its own pin
+and through its dependencies' pins, so one checkout can hold several copies; the build compiles the shallowest, which
+the top-level project adds first, and the deeper ones are shadowed.
+
+| What | When | Strictness |
+|---|---|---|
+| Two versions of a library in the build (configure, compile, link) | always | hard error |
+| A consumer requiring a newer version than the one that won | always | hard error |
+| A stale nested pin that is checked out but never compiled | ordinary commits | warning naming it |
+| The same stale nested pin | on a release tag | hard error |
+
+### The pins: `scripts/check_pins.py`
+
+- **The walk.** Every submodule at every depth: `.gitmodules` and the gitlink in the parent's tree (`HEAD` at the
+  top, the pinned commit below), into each checked-out submodule.
+- **A library is its URL.** The remote, normalised: scheme, user, port, case and `.git` dropped, `git@host:path`
+  read as `host/path`. `third_party/ts_moveables` in one repository and `third_party/ts-moveables` in another are one
+  library when their URLs are.
+- **A pin is its tag.** The release tag (`vX.Y.Z`) at the pinned commit, from any checkout of the library, else from
+  `git ls-remote --tags` (a shallow checkout may lack its tags; `--offline` never asks).
+- **Errors:** a built pin that is not a release tag (unless `pins_allow_untagged`); two copies at the same depth and
+  none shallower at different commits (whichever is added first wins); a consumer whose CMake files say
+  `snicholls_require(<name> <minimum>)` (or core's `snicholls_core_require(<minimum>)`) for more than the built copy
+  is, which configure would refuse (its `tests/` are not read: they hold fixtures); a gitlink with no `.gitmodules`
+  entry; a copy of the repository itself, a cycle.
+- **Every library is reached through a direct pin.** A CMake file or Makefile outside `third_party/` whose
+  `include()`, `add_subdirectory()`, `include_directories()`, `target_include_directories()`, `-I` or make `include`
+  names `third_party/<x>/third_party/`, or a `../` path out of the repository, is an error. So is an
+  `#include <snicholls/<x>/...>` in any source outside `third_party/` whose include root is neither the
+  repository's own nor in a direct pin's include directory (`<pin>/include/snicholls/<x>`, or the pin's
+  `include_dir`). `pins_reach_exempt` names an exception.
+- **Warnings**, errors with `--release` or `RELEASE_TAG`: a shadowed copy at another commit than the built one, a
+  checkout away from its pin, a submodule added but not committed, a pin whose tag cannot be found, an unused
+  `pins_ignore` entry. A requirement that cannot be checked (the built copy has no tag) is noted, not failed.
+
+```text
+  third_party/core                       v0.5.0       built
+  third_party/ts/third_party/core        v0.4.0       shadowed
+check_pins: warning: core: third_party/ts/third_party/core is pinned at v0.4.0 but shadowed by third_party/core at
+v0.5.0, which is what the build compiles: bump it to one version before the release
+check_pins: ok - 1 library, one version of each in the build, 1 warning
+```
+
+### Configure: `cmake/SnichollsOneVersion.cmake`
+
+Included by `SnichollsTooling.cmake`; the generic form of snicholls-core's three diamond rules.
+
+    snicholls_library_begin(<name> <version> <target>)   in the library, after project(), before its target
+    snicholls_require(<name> <minimum>)                  in every consumer, after the library is added
+    snicholls_assert_single_versions()                   the last line of a top-level project
+
+- **`snicholls_library_begin`** records `<name>@<version>` and the copy's directory. If `<target>` is already
+  defined, another copy was added first and won: it says so, with a warning naming both versions when they differ,
+  and returns from the calling `CMakeLists.txt`. It is a macro, so its `return()` is the caller's, exactly as
+  core's `if(TARGET snicholls::core) ... return() endif()`; call it at the file's top level, never inside a
+  function.
+- **`snicholls_require`** fails configure when the winning copy is older than `<minimum>`, or was never added.
+- **`snicholls_assert_single_versions`** fails configure when any library was reached at two versions, listing each
+  copy's version and directory; the same version twice is fine.
+- Global properties: `SNICHOLLS_LIBRARIES`, `SNICHOLLS_LIBRARY_VERSIONS_SEEN` (`<name>@<version>`), and per library
+  `SNICHOLLS_LIBRARY_<name>_VERSION`, `_SOURCE_DIR` (the winner) and `_COPIES`.
+
+A middle library, `snicholls-widgets`, uses core and is used by an application:
+
+```cmake
+# widgets/CMakeLists.txt
+cmake_minimum_required(VERSION 3.20)
+project(snicholls_widgets VERSION 0.4.0 LANGUAGES CXX)
+include(${CMAKE_CURRENT_SOURCE_DIR}/third_party/tooling/cmake/SnichollsTooling.cmake)
+snicholls_library_begin(snicholls_widgets ${PROJECT_VERSION} snicholls::widgets)   # a second copy returns here
+
+add_subdirectory(third_party/core EXCLUDE_FROM_ALL)   # its own pin: skipped when the top level added core first
+snicholls_require(snicholls_core 0.5.0)               # what widgets uses, never a forced pin
+
+add_library(snicholls_widgets INTERFACE)
+add_library(snicholls::widgets ALIAS snicholls_widgets)
+target_link_libraries(snicholls_widgets INTERFACE snicholls::core)
+# ... its tests, demos and checks when it is the top level
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+    snicholls_assert_single_versions()
+endif()
+```
+
+```cmake
+# app/CMakeLists.txt: the top level pins core and widgets itself, and adds core first, so its pin wins
+cmake_minimum_required(VERSION 3.20)
+project(app VERSION 1.0.0 LANGUAGES CXX)
+include(third_party/tooling/cmake/SnichollsTooling.cmake)
+add_subdirectory(third_party/core EXCLUDE_FROM_ALL)
+add_subdirectory(third_party/widgets EXCLUDE_FROM_ALL)   # widgets' third_party/core is skipped
+snicholls_require(snicholls_core 0.5.0)
+snicholls_require(snicholls_widgets 0.4.0)
+add_executable(app main.cpp)
+target_link_libraries(app PRIVATE snicholls::widgets snicholls::core)
+snicholls_assert_single_versions()   # the last line
+```
+
+With widgets' core at 0.4.0 and the application's at 0.5.0, configure fails:
+
+```text
+CMake Warning: snicholls_core 0.4.0 at .../third_party/widgets/third_party/core is skipped: snicholls_core 0.5.0
+at .../third_party/core was added first and wins. Pin every dependency that carries snicholls_core to one release.
+CMake Error: More than one version of a library was reached in this build:
+  snicholls_core: 0.5.0, 0.4.0
+    0.5.0 at .../third_party/core
+    0.4.0 at .../third_party/widgets/third_party/core
+Pin every dependency that carries a library to the same release tag.
+```
+
+### The version header
+
+Two copies of a library in one translation unit share the version header's include guard, so the guard skips the
+second without a word. The header therefore starts, before the guard, with a check that stops the compile
+([templates/version.hpp](templates/version.hpp)):
+
+```cpp
+#if defined(SNICHOLLS_EXAMPLE_VERSION_MAJOR) && \
+    (SNICHOLLS_EXAMPLE_VERSION_MAJOR != 0 || SNICHOLLS_EXAMPLE_VERSION_MINOR != 1 || SNICHOLLS_EXAMPLE_VERSION_PATCH != 0)
+#error "snicholls-example: two versions in one translation unit: 0.1.0 here, and another already included"
+#endif
+
+#ifndef snicholls_example_version_hpp
+/// \cond
+#define snicholls_example_version_hpp   // the guard: Doxygen does not take it for one after the check above
+/// \endcond
+
+#define SNICHOLLS_EXAMPLE_VERSION_MAJOR 0
+#define SNICHOLLS_EXAMPLE_VERSION_MINOR 1
+#define SNICHOLLS_EXAMPLE_VERSION_PATCH 0
+
+#endif
+```
+
+- The macros are defined inside the guard, so the version is written out again in the block. `check_version.py`
+  requires the block, before the guard, and compares its literals and the version in its `#error` text with the
+  rest: a bump that forgets the block fails `check.version`.
+- Doxygen no longer recognises the guard once the block stands before it, and would ask for the guard macro to be
+  documented: `\cond` and `\endcond` around its `#define` keep it out.
+
+### Link: the `odr` job
+
+Two definitions of one entity that differ between translation units, which two versions of a library linked into
+one program produce, are undefined behaviour no compiler sees alone. The library workflow's `odr` job (input
+`odr_check`, default `true`) builds with GCC and link-time optimisation, where the linker sees the whole program, and
+makes `-Wodr` an error. It is set in `CMAKE_CXX_FLAGS`, which the link line carries, because the warning is raised
+at the link, where a target's compile options (`<prefix>WERROR`) do not reach.
 
 ## The single-include compile check
 

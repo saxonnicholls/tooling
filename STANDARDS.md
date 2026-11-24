@@ -107,11 +107,22 @@ These are the principles behind every rule below. When a rule is unclear, these 
 - **Never** a branch tip, an untagged commit, a vendored copy, or `FetchContent` of a branch.
 - **One version across the family.** Every repository that uses a library pins the same tag.
 - **One owner.** A third-party library has one owning repository, normally its adapter; the others reach it through
-  that owner.
+  that owner's interface, never through its `third_party/`.
+- **Every library pins what it uses, in its own `third_party/`.**
+  - Each library it uses directly, ours or third-party, is a submodule of its own, even when another of its
+    dependencies already pins that library.
+  - It never reaches a dependency through another library's `third_party/` (no `include()`, `add_subdirectory()`,
+    include directory or `-I` naming `third_party/<x>/third_party/...`), through a sibling checkout (`../<repo>`) or
+    through a system install.
+  - Its own pin is what makes the one-version check meaningful: the top level sees, and decides, every library it
+    uses.
+  - `check_pins.py` enforces it: such a path in a CMake file or Makefile outside `third_party/`, and an
+    `#include <snicholls/<x>/...>` whose include root none of the repository's own pins provides, are errors.
+    `pins_reach_exempt` in `tooling.conf` names an exception, with the reason beside it.
 - **Bumps.** Each bump is a commit of its own: `third_party: bump <name> <old> -> <new>`.
 - **Version checks.** Semantic versions are written in three places: the version header, `project(... VERSION)` and
-  the tag. `check_version.py` fails if they disagree. It runs as the CTest `check.version`, and with
-  `--tag <tag>` before a release is tagged.
+  the tag; the version header's two-versions check repeats the number. `check_version.py` fails if they disagree.
+  It runs as the CTest `check.version`, and with `--tag <tag>` before a release is tagged.
 - **Releases.** A release is a tag on a commit where every blocking CI leg is green. A repository's first release is
   `v0.1.0`.
 
@@ -131,6 +142,40 @@ These are the principles behind every rule below. When a rule is unclear, these 
   - **Every release ships it.** On a `vX.Y.Z` tag, once the gating legs are green, the library workflow generates it
     from the tagged commit, compiles it alone and attaches it to the GitHub release. The download is that release,
     exactly. For an unreleased commit, `make single-include` writes it locally.
+
+### One version of each library, or it does not build
+
+A build has exactly one version of each library. Two would compile and link without a word, and disagree at run
+time, so the rule is enforced at every stage that can see it:
+
+| What | When | Strictness |
+|---|---|---|
+| Two versions of a library **in the build** (configure, compile, link) | always | hard error |
+| A consumer requiring a newer version than the one that won | always | hard error |
+| A stale nested pin that is checked out but never compiled | ordinary commits | a warning naming it |
+| The same stale nested pin | on a release tag | hard error: a release ships a converged tree |
+
+The copy that is built is the shallowest one, which the top-level project adds first. Nested copies of the same
+library, pinned by the libraries in between, are shadowed: checked out, never compiled.
+
+Four layers, each in tooling (README, "One version of each library"):
+1. **The pins: `check_pins.py`** (the CTest `check.pins`, `make check`, and a blocking step of the library workflow's
+   checks job). It walks every submodule at every depth, knows a library by its normalised remote URL, not by its
+   folder, and names each pin by its release tag. A built pin that is not a release tag, two copies at the same
+   depth with none shallower at different versions, and a consumer requiring more than the built copy are errors.
+   A shadowed copy at another version is a warning, and an error on a release tag. `pins_ignore` and
+   `pins_allow_untagged` in `tooling.conf` name the exceptions, each with its reason.
+2. **Configure: `cmake/SnichollsOneVersion.cmake`.** A library's `CMakeLists.txt` calls
+   `snicholls_library_begin(<name> <version> <target>)` before it defines its target: the first copy added wins and
+   later ones return at once, with a warning when the versions differ. A consumer states its minimum with
+   `snicholls_require(<name> <minimum>)`. A top-level project ends with `snicholls_assert_single_versions()`, which
+   fails when any library was reached at two versions.
+3. **Compile: the two-versions check.** Every library's version header starts, before its include guard, with a
+   block that `#error`s when the version macros are already defined with other values; the guard alone would skip
+   the second copy silently. `check_version.py` requires the block and checks its literals against the version.
+4. **Link: the one definition rule.** The library workflow's `odr` job builds and tests with GCC, link-time
+   optimisation and `-Wodr` as an error, so two definitions of one entity that differ across translation units
+   fail the link.
 
 ## 3. Interfaces: a concept and its virtual twin
 
