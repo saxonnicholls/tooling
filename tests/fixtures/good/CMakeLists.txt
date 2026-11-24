@@ -4,14 +4,18 @@
 #
 #  Copyright 2010-2026 Saxon Herschel Nicholls
 #
-#  A minimal library in the family's shape, for testing snicholls-tooling: the options the gate sets, the header
-#  check and the repository checks from tooling's CMake module, tests, demos and benchmarks as CTests.
+#  A minimal library in the family's shape, for testing snicholls-tooling: one version of itself in a build, the
+#  options the gate sets, the header check and the repository checks from tooling's CMake module, tests, demos and
+#  benchmarks as CTests.
 
 cmake_minimum_required(VERSION 3.20)
 project(snicholls_fixture VERSION 1.2.3 LANGUAGES CXX)
 
 set(SNICHOLLS_TOOLING_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tooling" CACHE PATH "snicholls-tooling's checkout")
 include(${SNICHOLLS_TOOLING_ROOT}/cmake/SnichollsTooling.cmake)
+
+# One version in the build: a second copy of the fixture, reached through another library, stops here
+snicholls_library_begin(snicholls_fixture ${PROJECT_VERSION} snicholls::fixture)
 
 option(SNICHOLLS_FIXTURE_WERROR "Warnings are errors" OFF)
 option(SNICHOLLS_FIXTURE_BUILD_DOCS "Build the documentation" OFF)
@@ -67,4 +71,9 @@ if(SNICHOLLS_FIXTURE_BUILD_DOCS)
     configure_file(docs/Doxyfile.in ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile @ONLY)
     add_custom_target(docs ALL COMMAND Doxygen::doxygen ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile
                       WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} VERBATIM)
+endif()
+
+# The last line of a top-level project: every library it reached, at one version each
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+    snicholls_assert_single_versions()
 endif()

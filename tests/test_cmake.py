@@ -6,7 +6,8 @@
 #
 #  cmake/SnichollsTooling.cmake against the fixture repository: snicholls_header_check() builds for the good fixture
 #  and fails for each way a header can be wrong; snicholls_tooling_add_checks() adds the checks as passing CTests.
-#  Needs CMake and a C++20 compiler; skipped without them.
+#  cmake/SnichollsOneVersion.cmake against a scratch top-level project that adds copies of a fake library, as
+#  snicholls-core's diamond test does. Needs CMake and a C++20 compiler; skipped without them.
 #
 #      python3 -m unittest discover -s tests -v
 #
@@ -14,6 +15,8 @@
 import os
 import shutil
 import subprocess
+import tempfile
+import textwrap
 import unittest
 
 from test_checks import Fixture, INC, TOOLING
@@ -126,6 +129,116 @@ snicholls_header_check(cpp17_concepts HEADERS snicholls/fixture/concepts/greeter
         self.assertNotEqual(p.returncode, 0)
         # CMake wraps a long message across lines on some platforms: compare with the whitespace normalised
         self.assertIn("expected 'key = value'", " ".join((p.stdout + p.stderr).split()))
+
+
+@unittest.skipUnless(CMAKE, "cmake is not installed")
+class OneVersionTest(unittest.TestCase):
+    """snicholls_library_begin, snicholls_require and snicholls_assert_single_versions, with copies of a fake library
+    (its CMakeLists.txt as a library's is written) added to a scratch top-level project."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def library(self, folder, version, name="fake"):
+        path = os.path.join(self.tmp, folder)
+        os.makedirs(path)
+        with open(os.path.join(path, "CMakeLists.txt"), "w", encoding="utf-8") as f:
+            f.write(textwrap.dedent("""\
+                cmake_minimum_required(VERSION 3.20)
+                project(%(name)s VERSION %(version)s LANGUAGES NONE)
+                include("%(tooling)s/cmake/SnichollsTooling.cmake")
+                snicholls_library_begin(%(name)s ${PROJECT_VERSION} %(name)s::%(name)s)
+                message(STATUS "defining %(name)s from ${CMAKE_CURRENT_LIST_DIR}")
+                add_library(%(name)s INTERFACE)
+                add_library(%(name)s::%(name)s ALIAS %(name)s)
+                """ % {"name": name, "version": version, "tooling": TOOLING}))
+        return path
+
+    def configure(self, body):
+        src = os.path.join(self.tmp, "top")
+        os.makedirs(src, exist_ok=True)
+        with open(os.path.join(src, "CMakeLists.txt"), "w", encoding="utf-8") as f:
+            f.write("cmake_minimum_required(VERSION 3.20)\nproject(top LANGUAGES NONE)\n"
+                    'include("%s/cmake/SnichollsTooling.cmake")\n%s\n' % (TOOLING, textwrap.dedent(body)))
+        p = subprocess.run([CMAKE, "-S", src, "-B", os.path.join(self.tmp, "build"), *GENERATOR],
+                           capture_output=True, text=True)
+        return p.returncode, " ".join((p.stdout + p.stderr).split())   # CMake wraps long messages
+
+    def test_the_same_version_twice_is_one_copy_and_passes(self):
+        a, b = self.library("a", "1.2.0"), self.library("b", "1.2.0")
+        code, out = self.configure("""
+            add_subdirectory("%s" a)
+            add_subdirectory("%s" b)
+            snicholls_require(fake 1.1.0)
+            get_property(seen GLOBAL PROPERTY SNICHOLLS_LIBRARY_VERSIONS_SEEN)
+            message(STATUS "seen: ${seen}")
+            snicholls_assert_single_versions()
+            """ % (a, b))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.count("defining fake from"), 1, out)   # the second copy returned before its target
+        self.assertIn("defining fake from %s" % a, out)
+        self.assertIn("fake 1.2.0: fake::fake is already defined from %s; this copy (%s) is skipped" % (a, b), out)
+        self.assertIn("seen: fake@1.2.0", out)
+        self.assertIn("top: fake 1.2.0 satisfies the required minimum 1.1.0", out)
+        self.assertIn("top: one version of each library in the build (1 reached)", out)
+        self.assertNotIn("CMake Warning", out)
+
+    def test_two_versions_warn_then_fail_the_assertion_listing_every_copy(self):
+        a, b = self.library("a", "1.2.0"), self.library("b", "1.1.0")
+        code, out = self.configure("""
+            add_subdirectory("%s" a)
+            add_subdirectory("%s" b)
+            snicholls_assert_single_versions()
+            """ % (a, b))
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("fake 1.1.0 at %s is skipped: fake 1.2.0 at %s was added first and wins" % (b, a), out)
+        self.assertIn("More than one version of a library was reached in this build: fake: 1.2.0, 1.1.0 "
+                      "1.2.0 at %s 1.1.0 at %s" % (a, b), out)
+
+    def test_without_the_assertion_the_first_copy_wins_with_a_warning(self):
+        a, b = self.library("a", "1.2.0"), self.library("b", "1.1.0")
+        code, out = self.configure('add_subdirectory("%s" a)\nadd_subdirectory("%s" b)' % (a, b))
+        self.assertEqual(code, 0, out)
+        self.assertIn("CMake Warning", out)
+
+    def test_every_library_is_asserted_on_its_own(self):
+        a, b = self.library("a", "1.0.0"), self.library("b", "2.0.0", name="other")
+        c = self.library("c", "2.0.1", name="other")
+        code, out = self.configure("""
+            add_subdirectory("%s" a)
+            add_subdirectory("%s" b)
+            add_subdirectory("%s" c)
+            snicholls_assert_single_versions()
+            """ % (a, b, c))
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("other: 2.0.0, 2.0.1", out)
+        self.assertNotIn("fake: 1.0.0", out)
+
+    def test_a_consumer_requiring_newer_fails(self):
+        a = self.library("a", "1.2.0")
+        code, out = self.configure('add_subdirectory("%s" a)\nsnicholls_require(fake 1.3.0)' % a)
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("top needs fake 1.3.0 or newer, but the copy that won is 1.2.0 (%s)" % a, out)
+
+    def test_the_older_copy_added_first_wins_and_a_newer_requirement_fails(self):
+        old, new = self.library("old", "1.0.0"), self.library("new", "1.2.0")
+        code, out = self.configure('add_subdirectory("%s" old)\nadd_subdirectory("%s" new)\n'
+                                   "snicholls_require(fake 1.2.0)" % (old, new))
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("the copy that won is 1.0.0", out)
+
+    def test_requiring_a_library_never_added_fails(self):
+        code, out = self.configure("snicholls_require(fake 1.0.0)")
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("snicholls_require(fake 1.0.0) was called before fake was added", out)
+
+    def test_a_version_that_is_not_x_y_z_fails(self):
+        code, out = self.configure("snicholls_library_begin(fake 1.2 fake::fake)")
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("the version is not x.y.z", out)
 
 
 if __name__ == "__main__":

@@ -40,9 +40,13 @@
 #  adds the named checks (default all four) as CTests check.mirror, check.version, check.interfaces and
 #  check.single_include.
 #
+#  One version of each library: snicholls_library_begin(), snicholls_require() and snicholls_assert_single_versions(),
+#  from SnichollsOneVersion.cmake, included here.
+#
 
 include_guard(GLOBAL)
 set(SNICHOLLS_TOOLING_DIR "${CMAKE_CURRENT_LIST_DIR}/.." CACHE INTERNAL "snicholls-tooling's checkout")
+include("${CMAKE_CURRENT_LIST_DIR}/SnichollsOneVersion.cmake")
 
 # Reads <config> into <prefix>_<key> in the caller's scope (the format: scripts/tooling_conf.py)
 function(snicholls_tooling_read_config config prefix)
