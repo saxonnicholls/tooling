@@ -13,6 +13,9 @@
 
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 from test_checks import TOOLING
@@ -73,7 +76,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertRegex(self.library, r"(?m)^on:\n  workflow_call:\n")
         inputs = blocks(self.library, "inputs", 6)
         self.assertEqual(set(inputs), {"path", "tooling", "prepare", "linux_arm64", "macos", "msvc",
-                                       "msvc_continue_on_error", "benchmarks", "docs", "pages"})
+                                       "msvc_continue_on_error", "benchmarks", "odr_check", "docs", "pages"})
         readme = read(os.path.join(TOOLING, "README.md"))
         for name, body in inputs.items():
             self.assertIn("description:", body, name)
@@ -83,7 +86,7 @@ class WorkflowTest(unittest.TestCase):
 
     def test_the_library_workflow_runs_the_legs(self):
         jobs = blocks(self.library, "jobs", 2)
-        self.assertEqual(list(jobs), ["plan", "checks", "linux", "macos", "windows", "docs", "single-include"])
+        self.assertEqual(list(jobs), ["plan", "checks", "linux", "macos", "windows", "odr", "docs", "single-include"])
         self.assertIn("test_ubuntu.sh\" --repo . --only \"$CONFIGURATION\"", jobs["linux"])
         self.assertIn("ubuntu-24.04-arm", jobs["plan"])
         self.assertIn("continue-on-error: ${{ inputs.msvc_continue_on_error }}", jobs["windows"])
@@ -91,7 +94,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn("if: inputs.pages && github.event_name == 'push'", jobs["docs"])
         # the single include: generated from the tagged commit, compiled alone, attached to the release
         self.assertIn("startsWith(github.ref, 'refs/tags/v')", jobs["single-include"])
-        self.assertIn("needs: [plan, checks, linux, macos]", jobs["single-include"])
+        self.assertIn("needs: [plan, checks, linux, macos, odr]", jobs["single-include"])
         self.assertIn("gh release upload", jobs["single-include"])
         self.assertIn("single_include.py\" --check", jobs["checks"])
         # one version of each library: the pins, with their tags (a full clone), strict on a release tag
@@ -99,12 +102,56 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn("fetch-depth: 0", jobs["checks"])
         pins_step = jobs["checks"].split("- name: One version of each library")[1]
         self.assertIn("RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v')", pins_step)
+        # and the one definition rule, at the link
+        self.assertIn("if: inputs.odr_check", jobs["odr"])
+        for flag in ("-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON", "-DCMAKE_CXX_FLAGS=-flto -Wodr -Werror=odr",
+                     '"-D${P}WERROR=ON"', "-DCMAKE_CXX_COMPILER=g++", "ctest --test-dir build-odr"):
+            self.assertIn(flag, jobs["odr"])
 
     def test_tooling_calls_it_on_the_fixture(self):
         tools = blocks(self.files["tools.yml"], "jobs", 2)
         self.assertIn("uses: ./.github/workflows/library.yml", tools["library"])
         self.assertIn("prepare: tests/fixture_repo.sh fixture-repo", tools["library"])
         self.assertIn("path: fixture-repo", tools["library"])
+
+
+def real_gcc():
+    gxx = shutil.which("g++")
+    if not gxx:
+        return None
+    p = subprocess.run([gxx, "--version"], capture_output=True, text=True)
+    return gxx if "Free Software Foundation" in p.stdout else None   # macOS's g++ is Clang
+
+
+@unittest.skipUnless(real_gcc(), "no GCC (macOS's g++ is Clang); the Linux leg runs it")
+class OdrFlagsTest(unittest.TestCase):
+    """The odr job's flags, read from the workflow, fail the link of two definitions of one type, as two versions
+    of a library linked into one program are; without them the program links silently."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        flags = re.search(r'"-DCMAKE_CXX_FLAGS=([^"]+)"', read(os.path.join(WORKFLOWS, "library.yml"))).group(1)
+        self.flags = flags.split()
+        for name, text in (("a.cpp", "struct widget { int a; };\nint use(widget* w) { return w->a; }\n"),
+                           ("b.cpp", "struct widget { long a; double b; };\nint use(widget* w);\n"
+                                     "int main() { widget w{1, 2}; return use(&w) == 1 ? 0 : 1; }\n")):
+            with open(os.path.join(self.tmp, name), "w", encoding="utf-8") as f:
+                f.write(text)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def link(self, *flags):
+        return subprocess.run([real_gcc(), "-std=c++20", "-O2", *flags, "a.cpp", "b.cpp", "-o", "program"],
+                              cwd=self.tmp, capture_output=True, text=True)
+
+    def test_two_definitions_of_one_type_fail_the_link(self):
+        p = self.link(*self.flags)
+        self.assertNotEqual(p.returncode, 0, p.stderr)
+        self.assertIn("violates the C++ One Definition Rule", p.stderr)
+
+    def test_without_lto_they_link_silently(self):
+        self.assertEqual(self.link().returncode, 0)
 
 
 if __name__ == "__main__":

@@ -217,6 +217,7 @@ A reusable workflow (`on: workflow_call`) that is a library's whole CI. Every le
 | `linux` | x86-64 and ARM64 | each configuration of the gate in a job of its own, `test_ubuntu.sh --only <config>`, in its image (derived ones included), 4 jobs on x86-64 and 3 on ARM64 |
 | `macos` | ARM64 and x86-64 | Apple Clang: Release with `<prefix>WERROR=ON` and the benchmark smoke runs, then Debug at `-O0` with asserts live |
 | `windows` | Windows | MSVC Release with `<prefix>WERROR=ON` and the benchmark smoke runs; `continue-on-error` unless `msvc_continue_on_error: false` |
+| `odr` | Ubuntu | GCC in the `gcc-release` image: Release with `<prefix>WERROR=ON`, `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` and `CMAKE_CXX_FLAGS=-flto -Wodr -Werror=odr -Werror=lto-type-mismatch`, then every CTest; two definitions of one entity that differ fail the link |
 | `docs` | Ubuntu | the documentation in the `gcc-release` image, with the pinned Doxygen; with `pages`, published to GitHub Pages |
 
 | Input | Default | Meaning |
@@ -229,6 +230,7 @@ A reusable workflow (`on: workflow_call`) that is a library's whole CI. Every le
 | `msvc` | `true` | the Windows leg |
 | `msvc_continue_on_error` | `true` | a Windows failure is reported, not gated on |
 | `benchmarks` | `true` | the benchmark smoke runs on macOS and Windows, when `benchmarks = yes`; the Linux configurations follow `tooling.conf` |
+| `odr_check` | `true` | the `odr` job: GCC with link-time optimisation and `-Wodr` as an error |
 | `docs` | `true` | the documentation job, when `docs = yes` |
 | `pages` | `false` | publish the documentation: `main` to `/main/`, each release tag to `/vX.Y.Z/`, the site's root to the newest release |
 

@@ -15,6 +15,8 @@
 #    - macOS ARM64 and x86-64, Apple Clang: Release with warnings as errors and the benchmark smoke runs, then Debug
 #      at -O0 with asserts live;
 #    - Windows, MSVC: Release with warnings as errors, not blocking by default;
+#    - the one definition rule: GCC with link-time optimisation and -Wodr, so two definitions of one entity that
+#      differ across translation units (two versions of a library linked into one program) fail the link;
 #    - the documentation with the pinned Doxygen, published to GitHub Pages when asked: main to /main/, each release
 #      tag to /vX.Y.Z/, the site's root to the newest release.
 #
@@ -56,6 +58,10 @@ on:
         default: true
       benchmarks:
         description: Build and smoke-run the benchmarks on macOS and Windows, when tooling.conf has benchmarks = yes
+        type: boolean
+        default: true
+      odr_check:
+        description: Build and test with GCC, link-time optimisation and -Wodr as an error, in the gcc-release image
         type: boolean
         default: true
       docs:
@@ -276,6 +282,47 @@ jobs:
           cmake --build build --config Release --parallel
           ctest --test-dir build -C Release --output-on-failure
 
+  # Two definitions of one entity that differ between translation units - what two versions of a library linked
+  # into one program produce - are undefined behaviour that no compiler sees alone. GCC's link-time optimiser sees
+  # the whole program, and -Wodr reports them. The warning is raised at the link, where target compile options do
+  # not reach, so it is made an error in CMAKE_CXX_FLAGS, which the link line carries.
+  odr:
+    name: Linux GCC one definition rule (LTO, -Wodr)
+    if: inputs.odr_check
+    needs: plan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.path }}
+    env:
+      P: ${{ needs.plan.outputs.prefix }}
+      CMAKE_ARGS: ${{ needs.plan.outputs.cmake }}
+      CONF_ENV: ${{ needs.plan.outputs.env }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Prepare
+        if: inputs.prepare != ''
+        working-directory: .
+        run: bash -c "$PREPARE"
+      - name: Build with LTO and -Wodr, warnings as errors, and run every test, in the gcc-release image
+        run: |
+          set -euo pipefail
+          image="$("$TOOLING/scripts/test_ubuntu.sh" --repo . --image gcc-release)"
+          env_args=()
+          for kv in $CONF_ENV; do env_args+=(-e "$kv"); done
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e P -e CMAKE_ARGS "${env_args[@]}" \
+            -v "$PWD:/src" -w /src "$image" \
+            bash -c 'cmake -S . -B build-odr -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++ \
+                       "-D${P}WERROR=ON" -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+                       "-DCMAKE_CXX_FLAGS=-flto -Wodr -Werror=odr -Werror=lto-type-mismatch" $CMAKE_ARGS &&
+                     cmake --build build-odr --parallel 4 &&
+                     ctest --test-dir build-odr --output-on-failure'
+
   docs:
     name: Documentation (warnings are errors)
     if: inputs.docs && needs.plan.outputs.docs == 'yes'
@@ -345,7 +392,7 @@ jobs:
   # commit, compiled alone with warnings as errors, and attached to the GitHub release, once every gating leg is green
   single-include:
     name: Release the single include
-    needs: [plan, checks, linux, macos]
+    needs: [plan, checks, linux, macos, odr]
     if: >-
       always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
