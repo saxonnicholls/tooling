@@ -23,6 +23,18 @@
 #
 #  A version string in the header is one more copy, named like any other:
 #      version_file.string = include/snicholls/core/version.hpp string\s*=\s*"(\d+\.\d+\.\d+)"
+#
+#  The two-versions check. Two copies of a library in one translation unit share the version header's include
+#  guard, so the guard would skip the second copy without a word. The header therefore starts, before its guard,
+#  with a block that fails the compile when the macros are already defined with other values:
+#
+#      #if defined(<P>VERSION_MAJOR) && (<P>VERSION_MAJOR != X || <P>VERSION_MINOR != Y || <P>VERSION_PATCH != Z)
+#      #error "<name>: two versions in one translation unit: X.Y.Z here, and another already included"
+#      #endif
+#
+#  The macros are defined inside the guard, so X, Y and Z are written out again: they are one more copy of the
+#  version, compared with the rest (as is an X.Y.Z in the #error text). A header without the block, or with it
+#  inside the guard, fails.
 #  Exit status 0 when every copy agrees, 1 when one does not, 2 on a configuration error.
 #
 
@@ -55,6 +67,34 @@ def strip_comments(src):
     return pattern.sub(lambda m: m.group(0) if m.group(0).startswith('"') else " ", src)
 
 
+def two_versions_check(src, rel, prefix):
+    """The version the block before the include guard is written for, from its literals (and its #error text)."""
+    p = re.escape(prefix)
+    flat = re.sub(r"\\\n", " ", src)
+    block = re.search(r"^[ \t]*#[ \t]*if[ \t]+defined[ \t]*\(?[ \t]*%sVERSION_MAJOR[ \t]*\)?[ \t]*&&[ \t]*\(([^\n]*)\)[ \t]*\n"
+                      r"[ \t]*#[ \t]*error\b([^\n]*)\n[ \t]*#[ \t]*endif\b" % p, flat, re.M)
+    usage = ("%s must start, before its include guard, with #if defined(%sVERSION_MAJOR) && (%sVERSION_MAJOR != X || "
+             "%sVERSION_MINOR != Y || %sVERSION_PATCH != Z) #error ... #endif, so that two versions in one "
+             "translation unit fail to compile (tooling's README, \"The version header\")" % ((rel,) + (prefix,) * 4))
+    if not block:
+        raise Missing(usage)
+    guard = re.search(r"^[ \t]*#[ \t]*(ifndef|if[ \t]+!|pragma[ \t]+once|define[ \t]+%sVERSION_)" % p, flat, re.M)
+    if guard and guard.start() < block.start():
+        raise Missing("%s: the two-versions check is inside the include guard, where a second copy never reaches it: "
+                      "move it before the guard" % rel)
+    literals = []
+    for field in ("MAJOR", "MINOR", "PATCH"):
+        m = re.search(r"\b%sVERSION_%s[ \t]*!=[ \t]*(\d+)\b" % (p, field), block.group(1))
+        if not m:
+            raise Missing(usage)
+        literals.append(str(int(m.group(1))))
+    found = [("%s (two-versions check)" % rel, ".".join(literals))]
+    text = re.search(r"\b(\d+\.\d+\.\d+)\b", block.group(2))
+    if text:
+        found.append(("%s (two-versions #error)" % rel, text.group(1)))
+    return found
+
+
 def header_versions(root, rel, prefix):
     src = strip_comments(read(root, rel))
     parts = []
@@ -63,7 +103,7 @@ def header_versions(root, rel, prefix):
         if not m:
             raise Missing("%sVERSION_%s is not defined in %s" % (prefix, field, rel))
         parts.append(str(int(m.group(1))))
-    return [(rel, ".".join(parts))]
+    return [(rel, ".".join(parts))] + two_versions_check(src, rel, prefix)
 
 
 def cmake_version(root, project):

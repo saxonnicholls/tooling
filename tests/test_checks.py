@@ -291,13 +291,101 @@ class VersionTest(Fixture):
         self.fails("version", "pyproject.toml does not exist")
 
     def test_a_version_string_in_the_header_by_its_three_parts(self):
-        self.edit(INC + "/version.hpp", "#endif", 'inline constexpr const char* version_string = "1.2.4";\n#endif')
+        self.edit(INC + "/version.hpp", "#define SNICHOLLS_FIXTURE_VERSION_PATCH 3\n",
+                  '#define SNICHOLLS_FIXTURE_VERSION_PATCH 3\ninline constexpr const char* version_string = "1.2.4";\n')
         self.conf(r'version_file.string = %s/version.hpp version_string\s*=\s*"(\d+)\.(\d+)\.(\d+)"' % INC)
         self.fails("version", "says 1.2.4")
 
     def test_missing_settings_are_a_configuration_error(self):
         self.edit("tooling.conf", "macro_prefix   = SNICHOLLS_FIXTURE_", "")
         self.fails("version", "'macro_prefix' is required", code=2)
+
+    # The two-versions check before the include guard
+
+    BLOCK = ("#if defined(SNICHOLLS_FIXTURE_VERSION_MAJOR) && \\\n"
+             "    (SNICHOLLS_FIXTURE_VERSION_MAJOR != 1 || SNICHOLLS_FIXTURE_VERSION_MINOR != 2 || "
+             "SNICHOLLS_FIXTURE_VERSION_PATCH != 3)\n")
+
+    def test_a_header_without_the_two_versions_check_fails(self):
+        self.edit(INC + "/version.hpp", self.BLOCK, "#if 0\n")
+        self.fails("version", "must start, before its include guard, with #if defined(SNICHOLLS_FIXTURE_VERSION_MAJOR)")
+
+    def test_the_check_inside_the_guard_fails(self):
+        with open(self.path(INC + "/version.hpp"), encoding="utf-8") as f:
+            text = f.read()
+        start = text.index("#if defined(")
+        end = text.index("#endif", start) + len("#endif\n")
+        block, text = text[start:end], text[:start] + text[end:]
+        text = text.replace("/// \\endcond\n", "/// \\endcond\n" + block)
+        self.write(INC + "/version.hpp", text)
+        self.fails("version", "the two-versions check is inside the include guard")
+
+    def test_a_bump_that_forgets_the_check_fails(self):
+        self.edit(INC + "/version.hpp", "VERSION_MINOR 2\n", "VERSION_MINOR 3\n")
+        self.edit(INC + "/version.hpp", "VERSION_PATCH 3\n", "VERSION_PATCH 4\n")
+        self.edit("CMakeLists.txt", "VERSION 1.2.3", "VERSION 1.3.4")
+        self.fails("version", "version.hpp (two-versions check) says 1.2.3")
+
+    def test_a_stale_error_text_fails(self):
+        self.edit(INC + "/version.hpp", "1.2.3 here", "1.2.2 here")
+        self.fails("version", "version.hpp (two-versions #error) says 1.2.2")
+
+    def test_the_check_needs_all_three_parts(self):
+        self.edit(INC + "/version.hpp", " || SNICHOLLS_FIXTURE_VERSION_PATCH != 3", "")
+        self.fails("version", "must start, before its include guard")
+
+    def test_the_template_carries_the_check_for_its_own_version(self):
+        import check_version
+        found = check_version.header_versions(TOOLING, "templates/version.hpp", "SNICHOLLS_EXAMPLE_")
+        self.assertEqual([where.split(" ", 1)[-1] for where, _ in found],
+                         ["templates/version.hpp", "(two-versions check)", "(two-versions #error)"])
+        self.assertEqual({version for _, version in found}, {"0.1.0"})
+
+
+CXX = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+
+
+@unittest.skipUnless(CXX, "no C++ compiler")
+class TwoVersionsCompileTest(Fixture):
+    """Two copies of the fixture's headers in one translation unit, as a build that reached it twice would see."""
+
+    def copy_at(self, name, patch):
+        dest = os.path.join(self.tmp, name)
+        shutil.copytree(self.path("include"), dest)
+        header = os.path.join(dest, "snicholls", "fixture", "version.hpp")
+        with open(header, encoding="utf-8") as f:
+            text = f.read()
+        with open(header, "w", encoding="utf-8") as f:
+            f.write(text.replace("VERSION_PATCH 3", "VERSION_PATCH %d" % patch)
+                    .replace("VERSION_PATCH != 3", "VERSION_PATCH != %d" % patch)
+                    .replace("1.2.3 here", "1.2.%d here" % patch))
+        return dest
+
+    def compile(self, first, second):
+        cpp = os.path.join(self.tmp, "both.cpp")
+        with open(cpp, "w", encoding="utf-8") as f:
+            f.write('#include "%s/snicholls/fixture/version.hpp"\n#include "%s/snicholls/fixture/version.hpp"\n'
+                    "int main() { return SNICHOLLS_FIXTURE_VERSION_PATCH; }\n" % (first, second))
+        return subprocess.run([CXX, "-std=c++20", "-fsyntax-only", cpp], capture_output=True, text=True)
+
+    def test_two_versions_in_one_translation_unit_fail_to_compile(self):
+        p = self.compile(self.copy_at("a", 3), self.copy_at("b", 4))
+        self.assertNotEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("snicholls-fixture: two versions in one translation unit: 1.2.4 here", p.stderr)
+
+    def test_the_same_version_twice_compiles(self):
+        p = self.compile(self.copy_at("a", 3), self.copy_at("b", 3))
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+
+    def test_without_the_check_the_guard_hides_the_second_copy(self):
+        # why the block exists: the guard alone compiles both, and the program silently has the first version
+        a, b = self.copy_at("a", 3), self.copy_at("b", 4)
+        header = os.path.join(b, "snicholls", "fixture", "version.hpp")
+        with open(header, encoding="utf-8") as f:
+            text = f.read()
+        with open(header, "w", encoding="utf-8") as f:
+            f.write(text.replace("#if defined(SNICHOLLS_FIXTURE_VERSION_MAJOR)", "#if 0 && defined(X)"))
+        self.assertEqual(self.compile(a, b).returncode, 0)
 
 
 class InterfacesTest(Fixture):
