@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 TOOLING = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -920,6 +921,99 @@ class SingleIncludeTest(Fixture):
     def test_an_unknown_umbrella_is_a_configuration_error(self):
         self.conf("single_include.other = snicholls/fixture/nope.hpp")
         self.check(2, "single_include.other: no header snicholls/fixture/nope.hpp")
+
+
+class ResourcesTest(unittest.TestCase):
+    """scripts/resources.sh: the machine's share of jobs, and one gate slot at a time across sessions."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.env = dict(os.environ, SNICHOLLS_LOCK_DIR=os.path.join(self.tmp, "gates"), SNICHOLLS_GATE_POLL="1")
+        for key in ("SNICHOLLS_JOBS", "SNICHOLLS_GATE_SLOTS", "SNICHOLLS_GATE_MEMORY", "CI"):
+            self.env.pop(key, None)
+        self.script = os.path.join(TOOLING, "scripts", "resources.sh")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def run_cli(self, *args, env=None):
+        p = subprocess.run(["bash", self.script, *args], capture_output=True, text=True, env=env or self.env)
+        return p.returncode, p.stdout.strip(), p.stderr
+
+    def test_jobs_is_a_share_of_the_machine_never_all_of_it(self):
+        code, out, _ = self.run_cli("jobs")
+        self.assertEqual(code, 0)
+        jobs = int(out)
+        self.assertGreaterEqual(jobs, 1)
+        self.assertLessEqual(jobs, max(1, (os.cpu_count() or 4) // 4))
+
+    def test_the_environment_overrides_every_default(self):
+        env = dict(self.env, SNICHOLLS_JOBS="3", SNICHOLLS_GATE_MEMORY="8g", SNICHOLLS_GATE_SLOTS="2")
+        self.assertEqual(self.run_cli("jobs", env=env)[1], "3")
+        self.assertEqual(self.run_cli("gate-memory", env=env)[1], "8g")
+        self.assertEqual(self.run_cli("gate-slots", env=env)[1], "2")
+        self.assertEqual(self.run_cli("gate-memory")[1], "24g")
+        self.assertEqual(self.run_cli("gate-slots")[1], "1")
+
+    def test_a_ci_runner_is_the_jobs_own_so_it_takes_every_core(self):
+        self.assertEqual(int(self.run_cli("jobs", env=dict(self.env, CI="true"))[1]), os.cpu_count())
+
+    def test_a_count_that_is_not_a_positive_number_falls_back_to_the_default(self):
+        default = self.run_cli("jobs")[1]
+        code, out, err = self.run_cli("jobs", env=dict(self.env, SNICHOLLS_JOBS="lots"))
+        self.assertEqual((code, out), (0, default))
+        self.assertIn("SNICHOLLS_JOBS=lots", err)
+        self.assertEqual(self.run_cli("gate-slots", env=dict(self.env, SNICHOLLS_GATE_SLOTS="0"))[1], "1")
+
+    def holder(self, seconds, what):
+        """A shell that takes a slot, says so, and holds it for `seconds`."""
+        cmd = ('. "%s"; snicholls_gate_acquire "%s"; trap snicholls_gate_release EXIT; echo taken; sleep %s'
+               % (self.script, what, seconds))
+        return subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                env=self.env)
+
+    def test_one_gate_at_a_time_the_second_waits_for_the_first(self):
+        first = self.holder(6, "first gate")
+        self.assertEqual(first.stdout.readline().strip(), "taken")
+        code, status, _ = self.run_cli("status")
+        self.assertIn("first gate", status)
+        start = time.monotonic()
+        second = self.holder(0, "second gate")
+        self.assertEqual(second.stdout.readline().strip(), "taken")
+        self.assertGreaterEqual(time.monotonic() - start, 2.0, "the second gate waited for the first")
+        self.assertIn("first gate", second.communicate()[1], "and said who held the slot")
+        first.communicate()
+        self.assertEqual(self.run_cli("status")[1], "", "released on exit")
+
+    def test_a_slot_whose_holder_died_is_taken_back(self):
+        lock = os.path.join(self.tmp, "gates", "slot-1")
+        os.makedirs(lock)
+        with open(os.path.join(lock, "pid"), "w") as f:
+            f.write("999999\n")   # no such process
+        self.assertIn("stale", self.run_cli("status")[1])
+        quick = self.holder(0, "after a crash")
+        self.assertEqual(quick.stdout.readline().strip(), "taken")
+        quick.communicate()
+
+    def test_a_slot_being_taken_has_no_pid_yet_and_is_not_stale(self):
+        os.makedirs(os.path.join(self.tmp, "gates", "slot-1"))
+        status = self.run_cli("status")[1]
+        self.assertNotIn("stale", status)
+        self.assertIn("slot-1", status)
+
+    def test_a_second_slot_lets_two_gates_run_at_once(self):
+        self.env["SNICHOLLS_GATE_SLOTS"] = "2"
+        first = self.holder(4, "first gate")
+        self.assertEqual(first.stdout.readline().strip(), "taken")
+        second = self.holder(0, "second gate")
+        self.assertEqual(second.stdout.readline().strip(), "taken")
+        self.assertEqual(second.communicate()[1], "", "it did not wait")
+        self.assertEqual(second.returncode, 0)
+        first.communicate()
+
+    def test_an_unknown_command_is_a_usage_error(self):
+        self.assertEqual(self.run_cli("bogus")[0], 2)
+
 
 class ScannerTest(unittest.TestCase):
     def scan(self, src):
