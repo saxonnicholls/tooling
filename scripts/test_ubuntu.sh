@@ -12,6 +12,7 @@
 #      third_party/tooling/scripts/test_ubuntu.sh --quick     gcc-release only
 #      third_party/tooling/scripts/test_ubuntu.sh --only clang-asan,gcc15-asan
 #      third_party/tooling/scripts/test_ubuntu.sh -j 4        at most 4 compiles and tests at once, on 4 CPUs
+#                                                             (default: scripts/resources.sh jobs, the machine's share)
 #      third_party/tooling/scripts/test_ubuntu.sh --plan      print the configurations and stop (no Docker)
 #      third_party/tooling/scripts/test_ubuntu.sh --list      print the names of the configurations and stop
 #      third_party/tooling/scripts/test_ubuntu.sh --image gcc-release   build that configuration's image, print its tag
@@ -54,10 +55,16 @@
 #  back, and an edit made while the gate runs reaches no configuration. Every configuration runs; the exit status is
 #  1 if any failed, 2 on a usage or configuration error.
 #
+#  The machine is shared (STANDARDS section 5, "Resources"; scripts/resources.sh). The gate waits for a gate slot,
+#  one per machine by default (SNICHOLLS_GATE_SLOTS), before its containers start, and says who holds it while it
+#  waits; each container is capped at SNICHOLLS_GATE_MEMORY (default 24g, swap included).
+#
 
 set -euo pipefail
 
 TOOLING="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/resources.sh disable=SC1091
+. "$TOOLING/scripts/resources.sh"   # the machine's share: jobs, the gate slot, the container's memory cap
 REPO=""
 QUICK=0
 PLAN=0
@@ -261,7 +268,10 @@ fi
 
 # The snapshot: tracked files that exist (a file deleted but not yet staged is skipped), no macOS metadata
 LIST="$(mktemp)"; OUT="$(mktemp)"; SNAPSHOT="$(mktemp)"
-trap 'rm -f "$LIST" "$OUT" "$SNAPSHOT"' EXIT
+trap 'rm -f "$LIST" "$OUT" "$SNAPSHOT"; snicholls_gate_release' EXIT
+# One gate at a time on this machine, across every repository and session (scripts/resources.sh): wait for the slot
+snicholls_gate_acquire "$NAME: ${SELECTED# }"
+[ -n "$JOBS" ] || JOBS="$(snicholls_jobs)"
 # shellcheck disable=SC2016  # $displaypath is git submodule foreach's, expanded by it
 ( cd "$REPO" && { git ls-files && git submodule foreach --quiet --recursive \
     'git ls-files | sed "s|^|$displaypath/|"'; } | while IFS= read -r f; do
@@ -310,7 +320,13 @@ HEAD
 
 ENV_ARGS=(-e "UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1")
 for kv in $(conf env); do ENV_ARGS+=(-e "$kv"); done
-[ -z "$JOBS" ] || ENV_ARGS+=(-e "CMAKE_BUILD_PARALLEL_LEVEL=$JOBS" -e "CTEST_PARALLEL_LEVEL=$JOBS" --cpus "$JOBS")
+# The CPUs: JOBS, but no more than Docker has (docker run refuses --cpus above that)
+CPUS="$JOBS"
+ncpu="$(docker info --format '{{.NCPU}}' 2>/dev/null || true)"
+case "$ncpu" in ""|*[!0-9]*|0) ;; *) [ "$CPUS" -le "$ncpu" ] || CPUS="$ncpu" ;; esac
+ENV_ARGS+=(-e "CMAKE_BUILD_PARALLEL_LEVEL=$JOBS" -e "CTEST_PARALLEL_LEVEL=$JOBS" --cpus "$CPUS")
+# The memory: a cap per container, swap included, so a gate is stopped before it exhausts the machine
+GATE_MEMORY="$(snicholls_gate_memory)"
 
 images=""
 for c in $SELECTED; do
@@ -339,7 +355,7 @@ for img in $images; do
     printf '%s\n%s\n%s' "$label_decl" "$script" "$lines" | docker run --rm -i \
         -v "$SNAPSHOT:/snapshot.tar:ro" \
         -e REPO_NAME="$NAME" -e OPTION_PREFIX="$P" -e SETUP="$(conf setup)" \
-        "${ENV_ARGS[@]}" "$tag" bash -s | tee -a "$OUT" \
+        --memory "$GATE_MEMORY" --memory-swap "$GATE_MEMORY" "${ENV_ARGS[@]}" "$tag" bash -s | tee -a "$OUT" \
         || echo "  $img container              FAILED" | tee -a "$OUT"
 done
 

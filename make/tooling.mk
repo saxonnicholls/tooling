@@ -52,7 +52,10 @@ endif
 BUILD ?= build
 CONFIG ?= Release
 CMAKE_FLAGS ?=
-JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
+# The machine's share, never all of it (scripts/resources.sh jobs), worked out once
+ifeq ($(origin JOBS),undefined)
+JOBS := $(shell $(TOOLING_DIR)/scripts/resources.sh jobs)
+endif
 UBUNTU ?=
 
 # tooling_configure <dir> <build type> <cmake arguments>
