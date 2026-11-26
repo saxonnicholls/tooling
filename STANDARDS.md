@@ -266,6 +266,27 @@ Four layers, each in tooling (README, "One version of each library"):
   - TURN;
   - a log hub.
 
+### Resources
+
+A development machine is shared: by the repositories, by every session working in them, and by long jobs that run
+for days. Each build takes its share, never the whole machine. Several builds and gates run at once at full width
+once exhausted a large workstation's memory and its swap; these rules keep that from happening again.
+`scripts/resources.sh` holds them (tooling's README, "Resources").
+- **A share of the machine, never all of it.** Builds and tests run `scripts/resources.sh jobs` compiles at once: a
+  quarter of the cores, at most one per 16 GB of memory. `make/tooling.mk` and the gate default to it;
+  `SNICHOLLS_JOBS` overrides it. A CI runner is the job's own machine and takes every core.
+- **One gate at a time per machine,** across every repository and session. `test_ubuntu.sh` takes a gate slot
+  before its containers start and waits, saying who holds it, while another gate runs. A repository with a gate
+  script of its own sources `resources.sh` and takes a slot the same way.
+- **A memory cap on every gate container,** 24 GB by default, swap included: a runaway build is stopped, not the
+  machine.
+- **Agents and parallel jobs.** Work split across parallel agents or jobs divides the share between them, it does
+  not multiply it: a few builders, each with a few jobs. Builders do not run gates; whoever merges their work runs the
+  gate, once. A build directory nobody needs any more is deleted.
+- **No local ARM64 emulation.** CI's ARM64 runners cover ARM64; emulating it locally costs many times the native build.
+- **A long-running job announces itself:** what it is, what it holds (cores, memory, a GPU) and until when, where the
+  others working on the machine will see it, so they can plan around it.
+
 ## 6. Security model
 
 - **Secrets live in `.credentials/`, one `.env` file per service:**

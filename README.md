@@ -7,6 +7,7 @@ It provides:
   `docker/ubuntu-26.04` (GCC 15), built with `scripts/build_image.sh <image>` and published to
   `ghcr.io/saxonnicholls/<image>`, and a repository's own images derived from them;
 - the local Ubuntu gate, `scripts/test_ubuntu.sh`, and the standard make targets, `make/tooling.mk`;
+- the machine's share for builds and gates, `scripts/resources.sh`: how many jobs, one gate at a time, a memory cap;
 - the repository checks: `scripts/check_mirror.py` (tests and demos mirror the headers), `scripts/check_version.py`
   (versions agree), `scripts/check_interfaces.py` (interfaces have both forms), `scripts/check_pins.py` (one version
   of each library, each pinned where it is used), and `cmake/SnichollsTooling.cmake` (every header compiles on its
@@ -182,6 +183,48 @@ spaces and are not quoted. Flags are `yes` or `no`. A key appears once. Python, 
 - **Each image's containers** run its configurations one after another; a configuration in a derived image runs in
   that image instead of its standard one.
 
+## Resources: `scripts/resources.sh`
+
+A machine is shared by every repository and session on it, so builds and gates take a share of it, never all of it
+(STANDARDS section 5, "Resources").
+
+    scripts/resources.sh jobs          compiles at once: a quarter of the cores, at most one per 16 GB, at least 1
+    scripts/resources.sh gate-memory   the memory cap of one gate container
+    scripts/resources.sh gate-slots    how many gates may run at once on this machine
+    scripts/resources.sh status        who holds the gate slots now, and since when
+
+- **Jobs.** `make/tooling.mk`'s `JOBS` and the gate's `-j` default to `resources.sh jobs`. On a CI runner (`CI=true`)
+  it is every core: the runner is the job's own.
+- **One gate at a time.** Before its containers start, `test_ubuntu.sh` takes a gate slot, a directory made with
+  `mkdir` (atomic) under the lock directory, which holds its pid, what it runs and since when. A second gate waits,
+  says who holds the slot, and looks again every few seconds. The slot is released when the gate exits, however it
+  exits; one whose holder was killed is taken back by the next gate that wants it.
+- **A memory cap.** Each gate container runs with `--memory` and `--memory-swap` at the gate memory, and with
+  `--cpus` at the jobs (no more than Docker has).
+
+| Variable | Default | What |
+|---|---|---|
+| `SNICHOLLS_JOBS` | a quarter of the cores, at most one per 16 GB, at least 1 | compiles and tests at once |
+| `SNICHOLLS_GATE_SLOTS` | `1` | gates at once on this machine; every session must agree |
+| `SNICHOLLS_GATE_MEMORY` | `24g` | the memory cap of one gate container, swap included (Docker's syntax) |
+| `SNICHOLLS_GATE_POLL` | `10` | seconds between a waiting gate's looks at the slots |
+| `SNICHOLLS_LOCK_DIR` | `/tmp/snicholls-gates` | the slots' directory, the same for every session on the machine |
+
+**A repository with a gate script of its own** (one that runs containers or a long build outside `test_ubuntu.sh`)
+sources `resources.sh` from its tooling pin, takes a slot before its containers start, releases it on exit, and caps
+its containers the same way:
+
+```bash
+. third_party/tooling/scripts/resources.sh
+trap 'rm -f "$TMP"; snicholls_gate_release' EXIT   # chained into the script's own trap, set before the slot is taken
+snicholls_gate_acquire "my-library: full gate"     # waits for the slot
+JOBS="${JOBS:-$(snicholls_jobs)}"
+docker run --rm --memory "$(snicholls_gate_memory)" --memory-swap "$(snicholls_gate_memory)" --cpus "$JOBS" ...
+```
+
+The functions work under `set -euo pipefail`, and in bash 3.2 (macOS) as in bash 5. snicholls-core, crypto and
+ts-moveables have gate scripts of their own and take the slot this way.
+
 ## Derived images
 
 A repository whose builds need more than the standard images hold (OpenCL with PoCL, a database client) writes one
@@ -227,7 +270,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends pocl-opencl-icd
 | `make clean` | removes every build directory above |
 
 - **Variables:** `CXX` (default `c++`), `BUILD` (`build`), `CONFIG` (`Release`), `CMAKE_FLAGS` (added to every
-  configure, after `tooling.conf`'s `cmake`), `JOBS` (the CPUs), `UBUNTU`.
+  configure, after `tooling.conf`'s `cmake`), `JOBS` (the machine's share, `scripts/resources.sh jobs`), `UBUNTU`.
 - **The repository's own runs.** `make.demos` and `make.benchmarks` are commands, run with `BUILD`, `CONFIG` and `CXX`
   in their environment, e.g. `make.benchmarks = python3 scripts/benchmarks_md.py --build build-bench`.
 - **More targets** go in the repository's `Makefile` after the `include`.
