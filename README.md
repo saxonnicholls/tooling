@@ -94,7 +94,7 @@ Licence: MIT ([LICENSE](LICENSE)).
      ci:
        uses: saxonnicholls/tooling/.github/workflows/library.yml@vX.Y.Z
        permissions:
-         contents: write   # only for pages: true, to push gh-pages
+         contents: write   # only for pages: true (gh-pages) or the release's single include
        with:
          pages: true
    ```
@@ -305,8 +305,10 @@ A reusable workflow (`on: workflow_call`) that is a library's whole CI. Every le
 
 - **Its tag.** Call it at the tag the submodule pins: the workflow runs the scripts of the submodule, and the two
   move together, in the same bump commit.
-- **Permissions.** Every job holds `contents: read`, except `docs`, which has what the calling job grants it. Grant
-  `contents: write` on the calling job only with `pages: true`, so it can push `gh-pages`.
+- **Permissions.** Every job holds `contents: read`, except `docs` and `single-include`, which have what the calling
+  job grants them: a called job that asks for more than its caller grants fails before it starts. Grant
+  `contents: write` on the calling job only with `pages: true`, so it can push `gh-pages`, or to attach the single
+  include to each release; without it, a release tag's `single-include` job fails at the upload.
 - **Linux runs in the images, not on the runner.** The configurations are the gate's, from the same `tooling.conf`,
   so CI and `make ubuntu` agree, and `image`, `setup` and `env` apply to both. macOS and Windows build natively,
   with `cmake` and `env` from `tooling.conf`.
@@ -507,7 +509,7 @@ It generates every `single_include.<name>` file into the build tree, again whene
 and defines an OBJECT library with one translation unit per file, which includes it with no other include directory:
 it proves the single include self-contained, as `--check` proves it complete. On a release tag the library workflow's
 `single-include` job generates the files from the tagged commit, compiles each alone and attaches them to the GitHub
-release (it needs `contents: write`).
+release (it needs `contents: write` from the calling job).
 
 ## The header check: `cmake/SnichollsTooling.cmake`
 

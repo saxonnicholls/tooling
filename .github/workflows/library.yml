@@ -397,8 +397,8 @@ jobs:
       always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
+    # No permissions of its own: a called job may not ask for more than its caller grants, and asking made every run
+    # of a read-only caller a startup failure. It has the calling job's; attaching needs contents: write there
     defaults:
       run:
         working-directory: ${{ inputs.path }}

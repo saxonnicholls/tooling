@@ -68,8 +68,8 @@ class WorkflowTest(unittest.TestCase):
             jobs = blocks(text, "jobs", 2)
             self.assertTrue(jobs, name)
             for job, body in jobs.items():
-                if name == "library.yml" and job == "docs":
-                    continue   # it has the caller's grant: contents: write only where pages is asked for
+                if name == "library.yml" and job in ("docs", "single-include"):
+                    continue   # the caller's grant: contents: write only where pages or the release asset is wanted
                 self.assertIn("\n    permissions:", "\n" + body, "%s: job %s sets no permissions" % (name, job))
 
     def test_the_library_workflow_is_reusable_with_documented_inputs(self):
