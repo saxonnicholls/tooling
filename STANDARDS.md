@@ -335,3 +335,76 @@ once exhausted a large workstation's memory and its swap; these rules keep that 
   - named header guards, which `snicholls_header_check()` (`cmake/SnichollsTooling.cmake`) checks as it compiles each
     header on its own, twice.
 - Public repositories name nothing private: no private repository, product, person, credential or local path.
+
+## 8. Apps, money movement and providers
+
+Every app (mobile, web, its server) and every library that moves money follows these rules. They are written to be
+audited: each one has a test or a check.
+
+**Repositories:**
+- Reusable components live once, in the shared libraries. That covers server components (auth, payments, KYC,
+  referral, provider adapters) and front-end packages (React Native and web).
+- Each product is its own repository. It holds its own objects, screens, configuration, credentials, branding and
+  deployment, and pins the libraries.
+- A product never pins another product. A shared need moves into a library first.
+
+**Identity:**
+- OAuth 2.1 with PKCE.
+- A device key in the Secure Enclave or Android Keystore, bound at enrolment.
+- Biometric or PIN unlock, and step-up before anything sensitive.
+- A device identifier is never an identity.
+
+**Money:**
+- Exact types only. Never a binary floating-point number for an amount, on the wire or in storage. Every currency is
+  kept at its own minor units.
+- Every movement is a double-entry posting in an append-only journal. Every record keeps its history.
+- Every request that moves money carries an idempotency key.
+- Every conversion names its rate and rounding mode.
+- Pooled funds are reconciled continuously against what each provider holds.
+
+**Providers:**
+- An adapter implements a contract (concept and virtual twin, with a conformance kit) and is tested against a fake
+  that implements the provider's documented behaviour. Where the provider has a sandbox, its simulations are tested
+  too.
+- The provider's published API description (OpenAPI) is pinned by hash and checked by a contract test.
+- API keys are least-privilege: one restricted key per job, and never a full-access key in a running service.
+- An idempotency key is created once per logical operation and persisted before the first send.
+- Client-side rate pacing follows the provider's published limits. `Retry-After` is honoured, with exponential
+  backoff and jitter after it.
+- Webhooks are verified and fail closed: an unverifiable delivery is rejected and logged. They are deduplicated and
+  applied in an order-independent way.
+
+**Card data:**
+- Card numbers, CVVs and PINs never touch our storage or logs.
+- Card details are shown only through the issuer's secure display.
+
+**Mocks:**
+- A mock is an explicit provider chosen by configuration.
+- An app never falls back to mock data on an error.
+
+**Mobile:**
+- One Expo SDK across every app, raised together.
+- Secure storage only.
+- Certificate pinning.
+- Screenshot protection on sensitive screens.
+- No personal data in logs.
+- Signed, reproducible builds with an SBOM. Over-the-air updates are code-signed and limited to reviewed JavaScript
+  changes.
+- Every app ships multilingual: every string translated, and money and dates formatted per locale, checked by a
+  script.
+
+**Credentials:**
+- Each app has its own, for every service, in its own `.credentials/` (section 6).
+- Two apps never share a credential.
+- The shared front-end repository holds none. Its scripts take the app as an argument.
+
+**Tests:**
+- Unit and contract tests.
+- End-to-end flows on iOS and Android simulators in CI.
+- Accessibility checks.
+- Scenario suites against provider sandboxes. They assert on our own ledger, not only on the provider's state, and
+  wait on events with deadlines, never on fixed sleeps.
+
+**Admin:**
+- Every administrative route is authenticated and role-checked.
+- Every administrative action is recorded.
